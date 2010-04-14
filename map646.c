@@ -35,17 +35,36 @@
 #include <errno.h>
 #include <assert.h>
 
+#if defined(__linux__)
+#include <linux/if_ether.h>
+#endif
+
 #include <net/if.h>
+#if defined(__linux__)
+#include <linux/if_tun.h>
+#else
 #include <net/if_tun.h>
+#endif
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+#if defined(__linux__)
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#else
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
+#endif
 
-#define BUFLEN 1600
+#if defined(__linux__)
+#define IPV6_VERSION 0x60
+#define IPV6_DEFHLIM 64
+#endif
+
+#define BUF_LEN 1600
+#define TUN_DEV_NAME "tun0"
 
 struct mapping {
   SLIST_ENTRY(mapping) mappings;
@@ -53,6 +72,7 @@ struct mapping {
   struct in6_addr addr6;
 };
 
+static int tun_alloc(char *);
 static int create_mapping(void);
 static int send_4to6(char *);
 static int convert_addrs_4to6(const struct in_addr *, const struct in_addr *,
@@ -69,8 +89,8 @@ extern int errno;
 int tun_fd;
 SLIST_HEAD(mappinglisthead, mapping) mapping_list_head = SLIST_HEAD_INITIALIZER(mapping_list_head);
 struct in6_addr mapping_prefix;
-const char *tun_dev_name = "/dev/tun0";
-const char *map646_conf_path = "/etc/map646.conf";
+char tun_dev_name[IFNAMSIZ];
+char *map646_conf_path = "/etc/map646.conf";
 
 int
 main(int argc, char *argv[])
@@ -80,12 +100,13 @@ main(int argc, char *argv[])
     exit(-1);
   }
 
-  tun_fd = open(tun_dev_name, O_RDWR);
+  tun_fd = tun_alloc(tun_dev_name);
   if (tun_fd == -1) {
     perror("open");
     fprintf(stderr, "cannot open a tun device %s.\n", tun_dev_name);
     exit(-1);
   }
+#if !defined(__linux__)
   int tun_iff_mode = IFF_POINTOPOINT;
   if (ioctl(tun_fd, TUNSIFMODE, &tun_iff_mode) == -1) {
     perror("ioctl");
@@ -98,21 +119,41 @@ main(int argc, char *argv[])
     fprintf(stderr, "failed to set TUNSIFHEAD to %d.\n", on);
     exit(-1);
   }
+#endif
 
   ssize_t read_len;
-  char buf[BUFLEN];
+  char buf[BUF_LEN];
   char *bufp;
-  while ((read_len = read(tun_fd, (void *)buf, BUFLEN)) != -1) {
+  while ((read_len = read(tun_fd, (void *)buf, BUF_LEN)) != -1) {
 #ifdef DEBUG
     fprintf(stderr, "read %d bytes\n", read_len);
 #endif
     bufp = buf;
 
-    uint32_t af = ntohl(*(uint32_t *)bufp);
+    uint32_t af = 0;
+#if defined(__linux__)
+    struct tun_pi *pi = (struct tun_pi *)bufp;
+    int ether_type = ntohs(pi->proto);
+    switch (ether_type) {
+    /* XXX this is BE. need to consider the byte order. */
+    case ETH_P_IP:
+      af = AF_INET;
+      break;
+    case ETH_P_IPV6:
+      af = AF_INET6;
+      break;
+    default:
+      fprintf(stderr, "unknown ether frame type %x received.\n", ether_type);
+      continue;
+    }
+    bufp += sizeof(struct tun_pi);
+#else
+    af = ntohl(*(uint32_t *)bufp);
+    bufp += sizeof(uint32_t);
+#endif
 #ifdef DEBUG
     fprintf(stderr, "af = %d\n", af);
 #endif
-    bufp += sizeof(uint32_t);
     switch (af) {
     case AF_INET:
       send_4to6(bufp);
@@ -124,6 +165,49 @@ main(int argc, char *argv[])
       fprintf(stderr, "unsupported address family %d is received.\n", af);
     }
   }
+}
+
+static int
+tun_alloc(char *tun_dev_name)
+{
+  assert(tun_dev_name != NULL);
+
+#if defined(__linux__)
+  struct ifreq ifr;
+  int tun_fd, error;
+
+  if ((tun_fd = open("/dev/net/tun", O_RDWR)) == -1) {
+    perror("open");
+    fprintf(stderr, "cannot create a control channel of the tun device.\n");
+    return (-1);
+  }
+
+  memset(&ifr, 0, sizeof(struct ifreq));
+  ifr.ifr_flags = IFF_TUN;
+  strncpy(ifr.ifr_name, TUN_DEV_NAME, IFNAMSIZ);
+  if (ioctl(tun_fd, TUNSETIFF, (void *)&ifr) == -1) {
+    close(tun_fd);
+    perror("ioctl");
+    fprintf(stderr, "cannot create a tun device %s.\n", tun_dev_name);
+    return (-1);
+  }
+
+  strcpy(tun_dev_name, ifr.ifr_name);
+
+  return (tun_fd);
+#else
+  int tun_fd;
+
+  strcpy(tun_dev_name, "/dev/" TUN_DEV_NAME);
+  tun_fd = open(tun_dev_name, O_RDWR);
+  if (tun_fd == -1) {
+    perror("open");
+    fprintf(stderr, "cannot create a tun device %s.\n", tun_dev_name);
+    return (-1);
+  }
+
+  return (tun_fd);
+#endif
 }
 
 static int
@@ -256,9 +340,17 @@ send_4to6(char *buf)
    * construct IPv6 packet.
    */
   struct iovec iov[3];
+#if defined(__linux__)
+  struct tun_pi pi;
+  pi.flags = 0;
+  pi.proto = htons(ETH_P_IPV6);
+  iov[0].iov_base = &pi;
+  iov[0].iov_len = sizeof(struct tun_pi);
+#else
   uint32_t af = htonl(AF_INET6);
   iov[0].iov_base = &af;
   iov[0].iov_len = sizeof(uint32_t);
+#endif
   iov[1].iov_base = &ip6_hdr;
   iov[1].iov_len = sizeof(struct ip6_hdr);
   iov[2].iov_base = bufp;
@@ -400,9 +492,17 @@ send_6to4(char *buf)
    * construct IPv4 packet.
    */
   struct iovec iov[3];
+#if defined(__linux__)
+  struct tun_pi pi;
+  pi.flags = 0;
+  pi.proto = htons(ETH_P_IP);
+  iov[0].iov_base = &pi;
+  iov[0].iov_len = sizeof(struct tun_pi);
+#else
   uint32_t af = htonl(AF_INET);
   iov[0].iov_base = &af;
   iov[0].iov_len = sizeof(uint32_t);
+#endif
   iov[1].iov_base = &ip4_hdr;
   iov[1].iov_len = sizeof(struct ip);
   iov[2].iov_base = bufp;
@@ -533,13 +633,23 @@ set_ulp_checksum(int ulp, struct iovec *iov)
   switch (ulp) {
   case IPPROTO_TCP:
     tcp_hdrp = iov[2].iov_base;
+#if defined(__linux__)
+    tcp_hdrp->check = 0;
+    tcp_hdrp->check = ulp_checksum(iov);
+#else
     tcp_hdrp->th_sum = 0;
     tcp_hdrp->th_sum = ulp_checksum(iov);
+#endif
     break;
   case IPPROTO_UDP:
     udp_hdrp = iov[2].iov_base;
+#if defined(__linux__)
+    udp_hdrp->check = 0;
+    udp_hdrp->check = ulp_checksum(iov);
+#else
     udp_hdrp->uh_sum = 0;
     udp_hdrp->uh_sum = ulp_checksum(iov);
+#endif
     break;
   default:
     fprintf(stderr, "unsupported upper layer protocol %d.\n", ulp);
@@ -558,7 +668,24 @@ ulp_checksum(struct iovec *iov)
 
   uint16_t *srcp, *dstp;
   int addr_len; /* in a unit of 2 octes. */
-  uint32_t af = htonl(*(uint32_t *)iov[0].iov_base);
+  uint32_t af = 0;
+#if defined(__linux__)
+  struct tun_pi *pi = (struct tun_pi *)iov[0].iov_base;
+  int ether_type = ntohs(pi->proto);
+  switch (ether_type) {
+    /* XXX this is BE. need to consider the byte order. */
+  case ETH_P_IP:
+    af = AF_INET;
+    break;
+  case ETH_P_IPV6:
+    af = AF_INET6;
+    break;
+  default:
+    fprintf(stderr, "unknown ether frame type %x received.\n", ether_type);
+  }
+#else
+  af = htonl(*(uint32_t *)iov[0].iov_base);
+#endif
   switch (af) {
   case AF_INET:
     ip_hdrp = (struct ip *)iov[1].iov_base;
