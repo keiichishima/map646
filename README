@@ -92,12 +92,21 @@ FreeBSD, but you can do the equivalent operation in different
 operating systems.
 
 # ifconfig tun0 create
-# (run maping64 in background.)
-# ifconfig tun0 inet 169.254.100.1 169.254.100.2
+# (run map646 in background.)
+# ifconfig tun0 up
 # route add -net 192.0.2.0/24 -iface tun0
 # route add -inet6 -net 64::/64 -iface tun0
 # sysctl -w net.inet.ip.forwarding=1
 # sysctl -w net.inet6.ip6.forwarding=1
+
+The below is the example in Linux case.
+
+# (run map646 in background)
+# ifconfig tun0 up
+# ip -4 route add 192.0.2.0/24 dev tun0
+# ip -6 route add 64::/64 dev tun0
+# sysctl -w net.ipv4.conf.all.forwarding=1
+# sysctl -w net.ipv6.conf.all.forwarding=1
 
 Once you have done all the settings, your mapping server is ready.
 
