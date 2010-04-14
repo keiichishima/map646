@@ -135,7 +135,6 @@ main(int argc, char *argv[])
     struct tun_pi *pi = (struct tun_pi *)bufp;
     int ether_type = ntohs(pi->proto);
     switch (ether_type) {
-    /* XXX this is BE. need to consider the byte order. */
     case ETH_P_IP:
       af = AF_INET;
       break;
@@ -673,7 +672,6 @@ ulp_checksum(struct iovec *iov)
   struct tun_pi *pi = (struct tun_pi *)iov[0].iov_base;
   int ether_type = ntohs(pi->proto);
   switch (ether_type) {
-    /* XXX this is BE. need to consider the byte order. */
   case ETH_P_IP:
     af = AF_INET;
     break;
@@ -684,7 +682,7 @@ ulp_checksum(struct iovec *iov)
     fprintf(stderr, "unknown ether frame type %x received.\n", ether_type);
   }
 #else
-  af = htonl(*(uint32_t *)iov[0].iov_base);
+  af = ntohl(*(uint32_t *)iov[0].iov_base);
 #endif
   switch (af) {
   case AF_INET:
@@ -715,7 +713,7 @@ ulp_checksum(struct iovec *iov)
     break;
 
   default:
-    fprintf(stderr, "unsupported address family %d.\n", af);
+    fprintf(stderr, "unsupported address family %d for upper layer pseudo header calculation.\n", af);
     return (0);
   }
 
