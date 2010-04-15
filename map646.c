@@ -32,7 +32,10 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/queue.h>
-#include <errno.h>
+#if !defined(__linux__)
+#include <sys/param.h>
+#endif
+#include <err.h>
 #include <assert.h>
 
 #if defined(__linux__)
@@ -64,7 +67,7 @@
 #endif
 
 #define BUF_LEN 1600
-#define TUN_DEV_NAME "tun0"
+#define TUN_IF_NAME "tun646"
 
 struct mapping {
   SLIST_ENTRY(mapping) mappings;
@@ -83,43 +86,35 @@ static int convert_addrs_6to4(const struct in6_addr *, const struct in6_addr *,
 static uint16_t ip4_header_checksum(struct ip *);
 static int set_ulp_checksum(int, struct iovec *);
 static uint16_t ulp_checksum(struct iovec *);
-
-extern int errno;
+void cleanup_sigint(int);
+void cleanup(void);
 
 int tun_fd;
 SLIST_HEAD(mappinglisthead, mapping) mapping_list_head = SLIST_HEAD_INITIALIZER(mapping_list_head);
 struct in6_addr mapping_prefix;
-char tun_dev_name[IFNAMSIZ];
+char tun_if_name[IFNAMSIZ];
 char *map646_conf_path = "/etc/map646.conf";
 
 int
 main(int argc, char *argv[])
 {
-  if (create_mapping() == -1) {
-    fprintf(stderr, "mapping table creation failed.\n");
-    exit(-1);
+  if (atexit(cleanup) == -1) {
+    err(EXIT_FAILURE, "failed to register an exit hook.");
+  }
+  if (signal(SIGINT, cleanup_sigint) == SIG_ERR) {
+    err(EXIT_FAILURE, "failed to register a SIGINT hook.");
   }
 
-  tun_fd = tun_alloc(tun_dev_name);
+  if (create_mapping() == -1) {
+    errx(EXIT_FAILURE, "mapping table creation failed.");
+  }
+
+  tun_fd = -1;
+  tun_if_name[0] = 0;
+  tun_fd = tun_alloc(tun_if_name);
   if (tun_fd == -1) {
-    perror("open");
-    fprintf(stderr, "cannot open a tun device %s.\n", tun_dev_name);
-    exit(-1);
+    errx(EXIT_FAILURE, "cannot open a tun internface %s.\n", tun_if_name);
   }
-#if !defined(__linux__)
-  int tun_iff_mode = IFF_POINTOPOINT;
-  if (ioctl(tun_fd, TUNSIFMODE, &tun_iff_mode) == -1) {
-    perror("ioctl");
-    fprintf(stderr, "failed to set TUNSIFMODE to %x.\n", tun_iff_mode);
-    exit(-1);
-  }
-  int on = 1;
-  if (ioctl(tun_fd, TUNSIFHEAD, &on) == -1) {
-    perror("ioctl");
-    fprintf(stderr, "failed to set TUNSIFHEAD to %d.\n", on);
-    exit(-1);
-  }
-#endif
 
   ssize_t read_len;
   char buf[BUF_LEN];
@@ -142,7 +137,7 @@ main(int argc, char *argv[])
       af = AF_INET6;
       break;
     default:
-      fprintf(stderr, "unknown ether frame type %x received.\n", ether_type);
+      warnx("unknown ether frame type %x received.", ether_type);
       continue;
     }
     bufp += sizeof(struct tun_pi);
@@ -161,48 +156,101 @@ main(int argc, char *argv[])
       send_6to4(bufp);
       break;
     default:
-      fprintf(stderr, "unsupported address family %d is received.\n", af);
+      warnx("unsupported address family %d is received.", af);
     }
   }
+  /*
+   * the program reaches here only when read(2) fails in the above
+   * while loop.
+   */
+  exit(EXIT_FAILURE);
+}
+
+void
+cleanup_sigint(int dummy)
+{
+  cleanup();
+}
+
+void
+cleanup(void)
+{
+  if (tun_fd != -1) {
+    close(tun_fd);
+  }
+
+#if !defined(__linux__)
+  int udp_ctl;
+  udp_ctl = socket(AF_INET, SOCK_DGRAM, 0);
+  if (udp_ctl == -1) {
+    warn("failed to open control socket for tun creation.");
+  }
+
+  struct ifreq ifr;
+  memset(&ifr, 0, sizeof(struct ifreq));
+  strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
+  if (ioctl(udp_ctl, SIOCIFDESTROY, &ifr) == -1) {
+    warn("cannot destroy %s interface.", ifr.ifr_name);
+  }
+  close(udp_ctl);
+#endif
 }
 
 static int
-tun_alloc(char *tun_dev_name)
+tun_alloc(char *tun_if_name)
 {
-  assert(tun_dev_name != NULL);
+  assert(tun_if_name != NULL);
 
 #if defined(__linux__)
-  struct ifreq ifr;
-  int tun_fd, error;
-
-  if ((tun_fd = open("/dev/net/tun", O_RDWR)) == -1) {
-    perror("open");
-    fprintf(stderr, "cannot create a control channel of the tun device.\n");
-    return (-1);
+  int tun_fd;
+  tun_fd = open("/dev/net/tun", O_RDWR);
+  if (tun_fd == -1) {
+    err(EXIT_FAILURE, "cannot create a control channel of the tun interface.");
   }
 
+  struct ifreq ifr;
   memset(&ifr, 0, sizeof(struct ifreq));
   ifr.ifr_flags = IFF_TUN;
-  strncpy(ifr.ifr_name, TUN_DEV_NAME, IFNAMSIZ);
+  strncpy(ifr.ifr_name, TUN_IF_NAME, IFNAMSIZ);
   if (ioctl(tun_fd, TUNSETIFF, (void *)&ifr) == -1) {
     close(tun_fd);
-    perror("ioctl");
-    fprintf(stderr, "cannot create a tun device %s.\n", tun_dev_name);
-    return (-1);
+    err(EXIT_FAILURE, "cannot create a tun interface %s.\n", TUN_IF_NAME);
   }
-
-  strcpy(tun_dev_name, ifr.ifr_name);
+  strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
 
   return (tun_fd);
 #else
-  int tun_fd;
+  int udp_ctl;
+  udp_ctl = socket(AF_INET, SOCK_DGRAM, 0);
+  if (udp_ctl == -1) {
+    err(EXIT_FAILURE, "failed to open control socket for tun creation.");
+  }
 
-  strcpy(tun_dev_name, "/dev/" TUN_DEV_NAME);
+  struct ifreq ifr;
+  memset(&ifr, 0, sizeof(struct ifreq));
+  strncpy(ifr.ifr_name, TUN_IF_NAME, IFNAMSIZ);
+  if (ioctl(udp_ctl, SIOCIFCREATE2, &ifr) == -1) {
+    err(EXIT_FAILURE, "cannot create %s interface.", ifr.ifr_name);
+  }
+  close(udp_ctl);
+  strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
+
+  char tun_dev_name[MAXPATHLEN];
+  strcat(tun_dev_name, "/dev/");
+  strcat(tun_dev_name, ifr.ifr_name);
+
+  int tun_fd;
   tun_fd = open(tun_dev_name, O_RDWR);
   if (tun_fd == -1) {
-    perror("open");
-    fprintf(stderr, "cannot create a tun device %s.\n", tun_dev_name);
-    return (-1);
+    err(EXIT_FAILURE, "cannot open a tun device %s.", tun_dev_name);
+  }
+  int tun_iff_mode = IFF_POINTOPOINT;
+  if (ioctl(tun_fd, TUNSIFMODE, &tun_iff_mode) == -1) {
+    err(EXIT_FAILURE, "failed to set TUNSIFMODE to %x.\n", tun_iff_mode);
+  }
+  int on = 1;
+  if (ioctl(tun_fd, TUNSIFHEAD, &on) == -1) {
+    err(EXIT_FAILURE, "failed to set TUNSIFHEAD to %d.\n", on);
   }
 
   return (tun_fd);
@@ -220,10 +268,8 @@ create_mapping()
 
   conf_fp = fopen(map646_conf_path, "r");
   if (conf_fp == NULL) {
-    perror("fopen");
-    fprintf(stderr, "opening a configuration file %s failed.\n",
-	    map646_conf_path);
-    return (-1);
+    err(EXIT_FAILURE, "opening a configuration file %s failed.",
+	map646_conf_path);
   }
 
   int line_count = 0;
@@ -231,31 +277,28 @@ create_mapping()
   while (getline(&line, &line_cap, conf_fp) > 0) {
     line_count++;
     if (sscanf(line, "%255s %255s %255s", op, addr1, addr2) == -1) {
-      fprintf(stderr, "line %d: syntax error.\n", line_count);
+      warn("line %d: syntax error.", line_count);
     }
     if (strcmp(op, "static") == 0) {
       struct mapping *mappingp;
       mappingp = (struct mapping *)malloc(sizeof(struct mapping));
       if (inet_pton(AF_INET, addr1, &mappingp->addr4) != 1) {
-	perror("inet_pton");
-	fprintf(stderr, "line %d: invalid address %s.\n", line_count, addr1);
+	warn("line %d: invalid address %s.", line_count, addr1);
 	free(mappingp);
 	continue;
       }
       if (inet_pton(AF_INET6, addr2, &mappingp->addr6) != 1) {
-	perror("inet_pton");
-	fprintf(stderr, "line %d: invalid address %s.\n", line_count, addr1);
+	warn("line %d: invalid address %s.", line_count, addr1);
 	free(mappingp);
 	continue;
       }
       SLIST_INSERT_HEAD(&mapping_list_head, mappingp, mappings);
     } else if (strcmp(op, "mapping-prefix") == 0) {
       if (inet_pton(AF_INET6, addr1, &mapping_prefix) != 1) {
-	perror("inet_pton");
-	fprintf(stderr, "line %d: invalid address %s.\n", line_count, addr1);
+	warn("line %d: invalid address %s.\n", line_count, addr1);
       }
     } else {
-      fprintf(stderr, "line %d: unknown operand %s.\n", line_count, op);
+      warnx("line %d: unknown operand %s.\n", line_count, op);
     }
   }
 
@@ -308,9 +351,7 @@ send_4to6(char *buf)
    * convert addresses.
    */
   if (convert_addrs_4to6(&ip4_src, &ip4_dst, &ip6_src, &ip6_dst) == -1) {
-#ifdef DEBUG
-    fprintf(stderr, "no mapping available. packet is dropped.\n");
-#endif
+    warnx("no mapping available. packet is dropped.");
     return (-1);
   }
 
@@ -368,8 +409,7 @@ send_4to6(char *buf)
   ssize_t write_len;
   write_len = writev(tun_fd, iov, 3);
   if (write_len == -1) {
-    perror("writev");
-    fprintf(stderr, "sending an IPv6 packet failed.\n");
+    warn("sending an IPv6 packet failed.");
   }
 
   return (0);
@@ -399,8 +439,8 @@ convert_addrs_4to6(const struct in_addr *ip4_src,
   }
   if (mappingp == NULL) {
     /* not found. */
-    fprintf(stderr, "no IPv6 pseudo endpoint address is found for the IPv4 pseudo endpoint address %s.\n",
-	    inet_ntoa(*ip4_dst));
+    warnx("no IPv6 pseudo endpoint address is found for the IPv4 pseudo endpoint address %s.\n",
+	  inet_ntoa(*ip4_dst));
     return (-1);
   }
   memcpy((void *)ip6_dst, (const void *)&mappingp->addr6,
@@ -462,7 +502,7 @@ send_6to4(char *buf)
    * convert addresses.
    */
   if (convert_addrs_6to4(&ip6_src, &ip6_dst, &ip4_src, &ip4_dst) == -1) {
-    fprintf(stderr, "no mapping available. packet is dropped.\n");
+    warnx("no mapping available. packet is dropped.");
     return (-1);
   }
 
@@ -526,8 +566,7 @@ send_6to4(char *buf)
   ssize_t write_len;
   write_len = writev(tun_fd, iov, 3);
   if (write_len == -1) {
-    perror("writev");
-    fprintf(stderr, "sending an IPv4 packet failed.\n");
+    warn("sending an IPv4 packet failed.");
   }
 
   return (0);
@@ -566,8 +605,8 @@ convert_addrs_6to4(const struct in6_addr *ip6_src,
   if (mappingp == NULL) {
     /* not found. */
     char addr_name[64];
-    fprintf(stderr, "no IPv4 pseudo endpoint address is found for the IPv6 pseudo endpoint address %s.\n",
-	    inet_ntop(AF_INET6, ip6_src, addr_name, 64));
+    warnx("no IPv4 pseudo endpoint address is found for the IPv6 pseudo endpoint address %s.",
+	  inet_ntop(AF_INET6, ip6_src, addr_name, 64));
     return (-1);
   }
   memcpy((void *)ip4_src, (const void *)&mappingp->addr4,
@@ -651,7 +690,7 @@ set_ulp_checksum(int ulp, struct iovec *iov)
 #endif
     break;
   default:
-    fprintf(stderr, "unsupported upper layer protocol %d.\n", ulp);
+    warnx("unsupported upper layer protocol %d.", ulp);
     return (-1);
   }
 }
@@ -679,7 +718,7 @@ ulp_checksum(struct iovec *iov)
     af = AF_INET6;
     break;
   default:
-    fprintf(stderr, "unknown ether frame type %x received.\n", ether_type);
+    warnx("unknown ether frame type %x received.", ether_type);
   }
 #else
   af = ntohl(*(uint32_t *)iov[0].iov_base);
@@ -713,7 +752,7 @@ ulp_checksum(struct iovec *iov)
     break;
 
   default:
-    fprintf(stderr, "unsupported address family %d for upper layer pseudo header calculation.\n", af);
+    warnx("unsupported address family %d for upper layer pseudo header calculation.", af);
     return (0);
   }
 
