@@ -22,8 +22,10 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-----------------------------------------
+
+============
 INTRODUCTION
+============
 
 map646 is a one to one IPv4-IPv6 address mapping program for protocol
 translateion.
@@ -37,16 +39,18 @@ this, you need the following things.
     IPv6 servers.
 
 
-----------------------------------------
+==============
 HOW TO COMPILE
+==============
 
 Just type 'cc map646.c'.  The program is developed for the FreeBSD
 operating system, but if your operating system supports the tun
 interface, then you can probably compile the program.
 
 
-----------------------------------------
+================
 HOW TO CONFIGURE
+================
 
 In this section, we assume that you have IPv6 address space
 2001:db8:0:0::/64 for your pure IPv6 network.  Also, we assume that
@@ -93,8 +97,8 @@ operating systems.
 
 # (run map646 in background.)
 # ifconfig tun646 up
-# route add -net 192.0.2.0/24 -iface tun0
-# route add -inet6 -net 64::/64 -iface tun0
+# route add -net 192.0.2.0/24 -iface tun646
+# route add -inet6 -net 64::/64 -iface tun646
 # sysctl -w net.inet.ip.forwarding=1
 # sysctl -w net.inet6.ip6.forwarding=1
 
@@ -102,16 +106,17 @@ The below is the example in Linux case.
 
 # (run map646 in background)
 # ifconfig tun646 up
-# ip -4 route add 192.0.2.0/24 dev tun0
-# ip -6 route add 64::/64 dev tun0
+# ip -4 route add 192.0.2.0/24 dev tun646
+# ip -6 route add 64::/64 dev tun646
 # sysctl -w net.ipv4.conf.all.forwarding=1
 # sysctl -w net.ipv6.conf.all.forwarding=1
 
 Once you have done all the settings, your mapping server is ready.
 
 
-----------------------------------------
+=================
 DNS CONFIGURATION
+=================
 
 You need to configure your IPv4 global addresses used to map your IPv6
 servers in your DNS server database.  The example entries are like below.
