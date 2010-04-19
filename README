@@ -43,9 +43,9 @@ this, you need the following things.
 HOW TO COMPILE
 ==============
 
-Just type 'cc map646.c'.  The program is developed for the FreeBSD
-operating system, but if your operating system supports the tun
-interface, then you can probably compile the program.
+Just type 'make'.  The program is developed for the FreeBSD operating
+system and the Linux operating system, but if your operating system
+supports the tun interface, then you can probably compile the program.
 
 
 ================
