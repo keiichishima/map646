@@ -55,7 +55,16 @@ tun_alloc(char *tun_if_name)
 {
   assert(tun_if_name != NULL);
 
+  int udp_fd;
+  udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (udp_fd == -1) {
+    err(EXIT_FAILURE, "failed to open control socket for tun creation.");
+  }
+
 #if defined(__linux__)
+  /*
+   * Create a new tun device.
+   */
   int tun_fd;
   tun_fd = open("/dev/net/tun", O_RDWR);
   if (tun_fd == -1) {
@@ -71,22 +80,16 @@ tun_alloc(char *tun_if_name)
     err(EXIT_FAILURE, "cannot create a tun interface %s.\n", tun_if_name);
   }
   strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
-
-  return (tun_fd);
 #else
-  int udp_ctl;
-  udp_ctl = socket(AF_INET, SOCK_DGRAM, 0);
-  if (udp_ctl == -1) {
-    err(EXIT_FAILURE, "failed to open control socket for tun creation.");
-  }
-
+  /*
+   * Create a new tun device.
+   */
   struct ifreq ifr;
   memset(&ifr, 0, sizeof(struct ifreq));
   strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
-  if (ioctl(udp_ctl, SIOCIFCREATE2, &ifr) == -1) {
+  if (ioctl(udp_fd, SIOCIFCREATE2, &ifr) == -1) {
     err(EXIT_FAILURE, "cannot create %s interface.", ifr.ifr_name);
   }
-  close(udp_ctl);
   strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
 
   char tun_dev_name[MAXPATHLEN];
@@ -102,13 +105,29 @@ tun_alloc(char *tun_if_name)
   if (ioctl(tun_fd, TUNSIFMODE, &tun_iff_mode) == -1) {
     err(EXIT_FAILURE, "failed to set TUNSIFMODE to %x.\n", tun_iff_mode);
   }
+  /*
+   * TUNSIFHEAD enables the address family information prepending
+   * procedure before the actual packets.
+   */
   int on = 1;
   if (ioctl(tun_fd, TUNSIFHEAD, &on) == -1) {
     err(EXIT_FAILURE, "failed to set TUNSIFHEAD to %d.\n", on);
   }
+#endif
+
+  /*
+   * Make the tun device up.
+   */
+  memset(&ifr, 0, sizeof(struct ifreq));
+  ifr.ifr_flags = IFF_UP;
+  strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
+  if (ioctl(udp_fd, SIOCSIFFLAGS, (void *)&ifr) == -1) {
+    err(EXIT_FAILURE, "failed to make %s up.", tun_if_name);
+  }
+
+  close(udp_fd);
 
   return (tun_fd);
-#endif
 }
 
 /*
@@ -121,9 +140,9 @@ tun_alloc(char *tun_if_name)
 int
 tun_dealloc(const char *tun_if_name)
 {
-  int udp_ctl;
-  udp_ctl = socket(AF_INET, SOCK_DGRAM, 0);
-  if (udp_ctl == -1) {
+  int udp_fd;
+  udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (udp_fd == -1) {
     warn("failed to open control socket for tun deletion.");
     return (-1);
   }
@@ -131,13 +150,13 @@ tun_dealloc(const char *tun_if_name)
   struct ifreq ifr;
   memset(&ifr, 0, sizeof(struct ifreq));
   strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
-  if (ioctl(udp_ctl, SIOCIFDESTROY, &ifr) == -1) {
+  if (ioctl(udp_fd, SIOCIFDESTROY, &ifr) == -1) {
     warn("cannot destroy %s interface.", ifr.ifr_name);
-    close(udp_ctl);
+    close(udp_fd);
     return (-1);
   }
 
-  close(udp_ctl);
+  close(udp_fd);
 
   return (0);
 }
