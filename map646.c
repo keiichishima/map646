@@ -84,7 +84,7 @@ main(int argc, char *argv[])
   }
 
   /* Create mapping table from the configuraion file. */
-  if (create_mapping_table(map646_conf_path) == -1) {
+  if (mapping_create_table(map646_conf_path) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 
@@ -100,7 +100,7 @@ main(int argc, char *argv[])
    * Installs necessary route entries based on the mapping table
    * information.
    */
-  if (install_mapping_route() == -1) {
+  if (mapping_install_route() == -1) {
     errx(EXIT_FAILURE, "failed to install mapped route information.");
   }
 
@@ -209,7 +209,8 @@ send_4to6(char *buf)
   /*
    * Convert IP addresses.
    */
-  if (convert_addrs_4to6(&ip4_src, &ip4_dst, &ip6_src, &ip6_dst) == -1) {
+  if (mapping_convert_addrs_4to6(&ip4_src, &ip4_dst,
+				 &ip6_src, &ip6_dst) == -1) {
     warnx("no mapping available. packet is dropped.");
     return (-1);
   }
@@ -313,7 +314,8 @@ send_6to4(char *buf)
   /*
    * Convert IP addresses.
    */
-  if (convert_addrs_6to4(&ip6_src, &ip6_dst, &ip4_src, &ip4_dst) == -1) {
+  if (mapping_convert_addrs_6to4(&ip6_src, &ip6_dst,
+				 &ip4_src, &ip4_dst) == -1) {
     warnx("no mapping available. packet is dropped.");
     return (-1);
   }

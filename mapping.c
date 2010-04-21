@@ -55,7 +55,7 @@ static struct in6_addr mapping_prefix;
  * struct mapping{} structure, and stored as SLIST entries.
  */
 int
-create_mapping_table(const char *map646_conf_path)
+mapping_create_table(const char *map646_conf_path)
 {
   FILE *conf_fp;
   char *line;
@@ -108,10 +108,10 @@ create_mapping_table(const char *map646_conf_path)
  * of the incoming packet and the information of the mapping table.
  */
 int
-convert_addrs_4to6(const struct in_addr *ip4_src,
-		   const struct in_addr *ip4_dst,
-		   struct in6_addr *ip6_src,
-		   struct in6_addr *ip6_dst)
+mapping_convert_addrs_4to6(const struct in_addr *ip4_src,
+			   const struct in_addr *ip4_dst,
+			   struct in6_addr *ip6_src,
+			   struct in6_addr *ip6_dst)
 {
   assert(ip4_src != NULL);
   assert(ip4_dst != NULL);
@@ -157,10 +157,10 @@ convert_addrs_4to6(const struct in_addr *ip4_src,
  * of the incoming packet and the information of the mapping table.
  */
 int
-convert_addrs_6to4(const struct in6_addr *ip6_src,
-		   const struct in6_addr *ip6_dst,
-		   struct in_addr *ip4_src,
-		   struct in_addr *ip4_dst)
+mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
+			   const struct in6_addr *ip6_dst,
+			   struct in_addr *ip4_src,
+			   struct in_addr *ip4_dst)
 {
   assert(ip6_src != NULL);
   assert(ip6_dst != NULL);
@@ -200,7 +200,7 @@ convert_addrs_6to4(const struct in6_addr *ip6_src,
 }
 
 int
-install_mapping_route(void)
+mapping_install_route(void)
 {
   struct mapping *mappingp;
   SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
