@@ -158,6 +158,8 @@ tun_alloc(char *tun_if_name)
 int
 tun_dealloc(const char *tun_if_name)
 {
+  assert(tun_if_name != NULL);
+
   int udp_fd;
   udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
   if (udp_fd == -1) {
@@ -193,6 +195,8 @@ tun_dealloc(const char *tun_if_name)
 uint32_t
 tun_get_af(const void *buf)
 {
+  assert(buf != NULL);
+
   uint32_t af = 255; /* XXX */
 
 #if defined(__linux__)
@@ -224,6 +228,8 @@ tun_get_af(const void *buf)
 int
 tun_set_af(void *buf, uint32_t af)
 {
+  assert(buf != NULL);
+
 #if defined(__linux__)
   uint16_t ether_type;
 
@@ -257,7 +263,7 @@ int
 tun_route_add(int af, const void *addr, int prefix_len)
 {
   assert(addr != NULL);
-  assert(prefix_len >= 0);
+  assert(prefix_len > 0);
 
 #if defined(__linux__)
   /* XXX not implemented yet */
