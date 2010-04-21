@@ -76,7 +76,7 @@ mapping_create_table(const char *map646_conf_path)
     if (sscanf(line, "%255s %255s %255s", op, addr1, addr2) == -1) {
       warn("line %d: syntax error.", line_count);
     }
-    if (strcmp(op, "static") == 0) {
+    if (strcmp(op, "map-static") == 0) {
       struct mapping *mappingp;
       mappingp = (struct mapping *)malloc(sizeof(struct mapping));
       if (inet_pton(AF_INET, addr1, &mappingp->addr4) != 1) {

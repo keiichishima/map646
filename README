@@ -73,8 +73,8 @@ follows.
 
 ----
 mapping-prefix 64::
-static 192.0.2.1 2001:db8:0:0::100
-static 192.0.2.2 2001:db8:0:0::500
+map-static 192.0.2.1 2001:db8:0:0::100
+map-static 192.0.2.2 2001:db8:0:0::500
 ----
 
 The first line defines the pseudo IPv6 prefix of the mapping system.
