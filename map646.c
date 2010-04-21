@@ -71,7 +71,6 @@ void cleanup_sigint(int);
 void cleanup(void);
 
 int tun_fd;
-char tun_if_name[IFNAMSIZ];
 char *map646_conf_path = "/etc/map646.conf";
 
 int
@@ -84,10 +83,12 @@ main(int argc, char *argv[])
     err(EXIT_FAILURE, "failed to register a SIGINT hook.");
   }
 
-  if (create_mapping(map646_conf_path) == -1) {
+  /* Create mapping table from the configuraion file. */
+  if (create_mapping_table(map646_conf_path) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 
+  /* Create a tun interface. */
   tun_fd = -1;
   strncpy(tun_if_name, TUN_DEFAULT_IF_NAME, IFNAMSIZ);
   tun_fd = tun_alloc(tun_if_name);
@@ -95,13 +96,18 @@ main(int argc, char *argv[])
     errx(EXIT_FAILURE, "cannot open a tun internface %s.\n", tun_if_name);
   }
 
+  /*
+   * Installs necessary route entries based on the mapping table
+   * information.
+   */
+  if (install_mapping_route() == -1) {
+    errx(EXIT_FAILURE, "failed to install mapped route information.");
+  }
+
   ssize_t read_len;
   char buf[BUF_LEN];
   char *bufp;
   while ((read_len = read(tun_fd, (void *)buf, BUF_LEN)) != -1) {
-#ifdef DEBUG
-    fprintf(stderr, "read %d bytes\n", read_len);
-#endif
     bufp = buf;
 
     uint32_t af = 0;

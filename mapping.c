@@ -34,6 +34,17 @@
 #include <netinet/in.h>
 
 #include "mapping.h"
+#include "tunif.h"
+
+/*
+ * The mapping structure between the global IPv4 address and the
+ * internal IPv6 address.
+ */
+struct mapping {
+  SLIST_ENTRY(mapping) mappings;
+  struct in_addr addr4;
+  struct in6_addr addr6;
+};
 
 SLIST_HEAD(mappinglisthead, mapping) mapping_list_head = SLIST_HEAD_INITIALIZER(mapping_list_head);
 static struct in6_addr mapping_prefix;
@@ -44,7 +55,7 @@ static struct in6_addr mapping_prefix;
  * struct mapping{} structure, and stored as SLIST entries.
  */
 int
-create_mapping(const char *map646_conf_path)
+create_mapping_table(const char *map646_conf_path)
 {
   FILE *conf_fp;
   char *line;
@@ -186,4 +197,15 @@ convert_addrs_6to4(const struct in6_addr *ip6_src,
 	 sizeof(struct in_addr));
 
   return (0);
+}
+
+int
+install_mapping_route(void)
+{
+  struct mapping *mappingp;
+  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+    tun_route_add(AF_INET, &mappingp->addr4, 32);
+  }
+
+  tun_route_add(AF_INET6, &mapping_prefix, 64);
 }

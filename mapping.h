@@ -27,20 +27,11 @@
 
 #include <sys/queue.h>
 
-/*
- * The mapping structure between the global IPv4 address and the
- * internal IPv6 address.
- */
-struct mapping {
-  SLIST_ENTRY(mapping) mappings;
-  struct in_addr addr4;
-  struct in6_addr addr6;
-};
-
-int create_mapping(const char *map646_conf_path);
+int create_mapping_table(const char *map646_conf_path);
 int convert_addrs_4to6(const struct in_addr *, const struct in_addr *,
 		       struct in6_addr *, struct in6_addr *);
 int convert_addrs_6to4(const struct in6_addr *, const struct in6_addr *,
 		       struct in_addr *, struct in_addr *);
+int install_mapping_route(void);
 
 #endif

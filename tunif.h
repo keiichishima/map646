@@ -27,12 +27,15 @@
 
 #define TUN_DEFAULT_IF_NAME "tun646"
 
+extern char tun_if_name[];
+
 int tun_alloc(char *);
 #if !defined(__linux__)
 int tun_dealloc(const char *);
 #endif
 uint32_t tun_get_af(const void *);
 int tun_set_af(void *, uint32_t);
+int tun_route_add(int, const void *, int);
 
 #endif
 

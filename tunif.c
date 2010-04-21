@@ -30,6 +30,7 @@
 #include <err.h>
 
 #if !defined(__linux__)
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/param.h>
 #endif
@@ -39,8 +40,25 @@
 #if defined(__linux__)
 #include <linux/if_tun.h>
 #else
+#include <ifaddrs.h>
+#include <net/route.h>
+#include <net/if_dl.h>
 #include <net/if_tun.h>
 #endif
+#include <netinet/in.h>
+
+union sockunion {
+  struct sockaddr sa;
+  struct sockaddr_in sin;
+  struct sockaddr_in6 sin6;
+#if !defined(__linux__)
+  struct sockaddr_dl sdl;
+#endif
+};
+
+static int tun_make_netmask(union sockunion *, int, int);
+
+char tun_if_name[IFNAMSIZ];
 
 /*
  * Create a new tun interface with the given name.  If the name
@@ -233,4 +251,167 @@ tun_set_af(void *buf, uint32_t af)
 
   return (0);
 #endif
+}
+
+int
+tun_route_add(int af, const void *addr, int prefix_len)
+{
+  assert(addr != NULL);
+  assert(prefix_len >= 0);
+
+#if defined(__linux__)
+  /* XXX not implemented yet */
+  warnx("built-in route manipulation is not supported yet.");
+  return (0);
+#else
+  int rtm_addrs = 0;
+  int rtm_flags = RTF_UP|RTF_HOST|RTF_STATIC;
+  union sockunion so_dst, so_gate, so_mask;
+
+  switch (af) {
+  case AF_INET:
+    /* Prepare destination address information. */
+    memset(&so_dst.sin, 0, sizeof(struct sockaddr_in));
+    so_dst.sin.sin_len = sizeof(struct sockaddr_in);
+    so_dst.sin.sin_family = AF_INET;
+    memcpy(&so_dst.sin.sin_addr, addr, sizeof(struct in_addr));
+    rtm_addrs |= RTA_DST;
+
+    /* Create netmask information if specified. */
+    if (prefix_len < 32) {
+      memset(&so_mask.sin, 0, sizeof(struct sockaddr_in));
+      so_mask.sin.sin_len = sizeof(struct sockaddr_in);
+      so_mask.sin.sin_family = AF_INET;
+      tun_make_netmask(&so_mask, AF_INET, prefix_len);
+      rtm_addrs |= RTA_NETMASK;
+      rtm_flags &= ~RTF_HOST;
+    }
+    break;
+
+  case AF_INET6:
+    /* Prepare destination address information. */
+    memset(&so_dst.sin6, 0, sizeof(struct sockaddr_in6));
+    so_dst.sin6.sin6_len = sizeof(struct sockaddr_in6);
+    so_dst.sin6.sin6_family = AF_INET6;
+    memcpy(&so_dst.sin6.sin6_addr, addr, sizeof(struct in6_addr));
+    rtm_addrs |= RTA_DST;
+
+    /* Create netmask information if specified. */
+    if (prefix_len < 128) {
+      memset(&so_mask.sin6, 0, sizeof(struct sockaddr_in6));
+      so_mask.sin6.sin6_len = sizeof(struct sockaddr_in6);
+      so_mask.sin6.sin6_family = AF_INET6;
+      tun_make_netmask(&so_mask, AF_INET6, prefix_len);
+      rtm_addrs |= RTA_NETMASK;
+      rtm_flags &= ~RTF_HOST;
+    }
+    break;
+
+  default:
+    warnx("unsupported address family %d", af);
+    return (-1);
+  }
+
+  struct ifaddrs *ifap, *ifa;
+  struct sockaddr_dl *sdlp = NULL;
+  if (getifaddrs(&ifap)) {
+    err(EXIT_FAILURE, "cannot get ifaddrs.");
+  }
+  for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr->sa_family != AF_LINK)
+      continue;
+    if (strcmp(tun_if_name, ifa->ifa_name))
+      continue;
+    sdlp = (struct sockaddr_dl *)ifa->ifa_addr;
+  }
+  memcpy(&so_gate.sdl, sdlp, sdlp->sdl_len);
+  freeifaddrs(ifap);
+  if (sdlp == NULL) {
+    errx(EXIT_FAILURE, "cannot find a link-layer address of %s.", tun_if_name);
+  }
+  rtm_addrs |= RTA_GATEWAY;
+
+  struct {
+    struct rt_msghdr m_rtm;
+    char m_space[512];
+  } m_rtmsg;
+  char *cp = m_rtmsg.m_space;
+  int l;
+  static int seq = 0;
+  memset(&m_rtmsg, 0, sizeof(m_rtmsg));
+  m_rtmsg.m_rtm.rtm_type = RTM_ADD;
+  m_rtmsg.m_rtm.rtm_flags = rtm_flags;
+  m_rtmsg.m_rtm.rtm_version = RTM_VERSION;
+  m_rtmsg.m_rtm.rtm_seq = ++seq;
+  m_rtmsg.m_rtm.rtm_addrs = rtm_addrs;
+#define NEXTADDR(w, u) \
+  if (rtm_addrs & (w)) { \
+    l = SA_SIZE(&(u.sa)); memmove(cp, &(u), l); cp += l; \
+  }
+  NEXTADDR(RTA_DST, so_dst);
+  NEXTADDR(RTA_GATEWAY, so_gate);
+  NEXTADDR(RTA_NETMASK, so_mask);
+  m_rtmsg.m_rtm.rtm_msglen = l = cp - (char *)&m_rtmsg;
+
+  int route_fd;
+  ssize_t write_len;
+  route_fd = socket(PF_ROUTE, SOCK_RAW, 0);
+  if (route_fd == -1) {
+    err(EXIT_FAILURE, "failed to open a routing socket.");
+  }
+  write_len = write(route_fd, (char *)&m_rtmsg, l);
+  if (write_len == -1) {
+    err(EXIT_FAILURE, "failed to install route information.");
+  }
+  close(route_fd);
+
+  return (0);
+#endif
+}
+
+static int
+tun_make_netmask(union sockunion *mask, int af, int prefix_len)
+{
+  assert(mask != NULL);
+  assert(prefix_len > 0);
+
+  int max, q, r, sa_len;
+  char *p;
+
+  switch (af) {
+  case AF_INET:
+    max = 32;
+    sa_len = sizeof(struct sockaddr_in);
+    p = (char *)&mask->sin.sin_addr;
+    break;
+
+  case AF_INET6:
+    max = 128;
+    sa_len = sizeof(struct sockaddr_in6);
+    p = (char *)&mask->sin6.sin6_addr;
+    break;
+
+  default:
+    errx(EXIT_FAILURE, "unsupported address family %d.", af);
+  }
+
+  if (max < prefix_len) {
+    errx(EXIT_FAILURE, "invalid prefix length %d.", prefix_len);
+  }
+
+  q = prefix_len >> 3;
+  r = prefix_len & 7;
+  mask->sa.sa_family = af;
+#if !defined(__linux__)
+  mask->sa.sa_len = sa_len;
+#endif
+  memset((void *)p, 0, max / 8);
+  if (q > 0) {
+    memset((void *)p, 0xff, q);
+  }
+  if (r > 0) {
+    *((u_char *)p + q) = (0xff00 >> r) & 0xff;
+  }
+
+  return (0);
 }
