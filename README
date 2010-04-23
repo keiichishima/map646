@@ -28,7 +28,7 @@ INTRODUCTION
 ============
 
 map646 is a one to one IPv4-IPv6 address mapping program for protocol
-translateion.
+translation.
 
 This program is used in a scenario when you have a pure IPv6 network
 but want to open some of the server services to IPv4 users.  To do
@@ -86,19 +86,20 @@ the lower 4 bytes of the pseudo IPv6 address in a hexadecimal form (in
 this case, 0xCA (202), 0xD6 (214), 0x56 (86), and 0xC4 (196)).
 
 Similary, any IPv4 nodes can contact to your IPv6 server using the
-global address mapped to your server address.  If an IPv4 node
-contacts to 192.0.2.2, then your server (2001:db8:0:0::500) will
-receive an incoming packet from 64::cad6:56c5.
+global address mapped to your server address.  If the IPv4 node (which
+IPv4 address is 202.214.86.196) contacts to 192.0.2.2, then your IPv6
+server (2001:db8:0:0::500) will receive an incoming packet from
+64::cad6:56c5.
 
 To use the program, you need to setup your node as a router by
 enabling forwarding function.  The following example is a sample
-startup operation procedure for FreeBSD operating system.
+startup operation procedure for the FreeBSD operating system.
 
 # (run map646 in background.)
 # sysctl -w net.inet.ip.forwarding=1
 # sysctl -w net.inet6.ip6.forwarding=1
 
-The below is an example in Linux case.
+The below is an example in the Linux case.
 
 # (run map646 in background)
 # sysctl -w net.ipv4.conf.all.forwarding=1
