@@ -41,6 +41,7 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/if_tun.h>
+#include <linux/if_ether.h>
 #else
 #include <ifaddrs.h>
 #include <net/route.h>
