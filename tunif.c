@@ -31,13 +31,15 @@
 
 #if !defined(__linux__)
 #include <sys/types.h>
-#include <sys/socket.h>
 #include <sys/param.h>
 #endif
+#include <sys/socket.h>
 #include <sys/ioctl.h>
 
 #include <net/if.h>
 #if defined(__linux__)
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 #include <linux/if_tun.h>
 #else
 #include <ifaddrs.h>
@@ -46,17 +48,6 @@
 #include <net/if_tun.h>
 #endif
 #include <netinet/in.h>
-
-union sockunion {
-  struct sockaddr sa;
-  struct sockaddr_in sin;
-  struct sockaddr_in6 sin6;
-#if !defined(__linux__)
-  struct sockaddr_dl sdl;
-#endif
-};
-
-static int tun_make_netmask(union sockunion *, int, int);
 
 char tun_if_name[IFNAMSIZ];
 
@@ -259,17 +250,195 @@ tun_set_af(void *buf, uint32_t af)
 #endif
 }
 
+#if defined(__linux__)
+/*
+ * The addition procedure of a route entry for Linux.
+ */
+
+struct inet_prefix {
+  uint8_t family;
+  uint8_t bytelen;
+  uint16_t bitlen;
+  uint32_t flags;
+  uint32_t data[8];
+};
+
 int
 tun_route_add(int af, const void *addr, int prefix_len)
 {
   assert(addr != NULL);
   assert(prefix_len > 0);
 
-#if defined(__linux__)
-  /* XXX not implemented yet */
-  warnx("built-in route manipulation is not supported yet.");
+  struct {
+    struct nlmsghdr m_nlmsghdr;
+    struct rtmsg m_rtmsg;
+    char m_space[1024];
+  } m_nlmsg;
+
+  memset(&m_nlmsg, 0, sizeof(m_nlmsg));
+  m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+  m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
+  m_nlmsg.m_nlmsghdr.nlmsg_type = RTM_NEWROUTE;
+  m_nlmsg.m_rtmsg.rtm_family = af;
+  m_nlmsg.m_rtmsg.rtm_table = RT_TABLE_MAIN;
+  m_nlmsg.m_rtmsg.rtm_protocol = RTPROT_BOOT;
+  m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_UNIVERSE;
+  m_nlmsg.m_rtmsg.rtm_type = RTN_UNICAST;
+
+  /* construct the destination address information. */
+  struct inet_prefix dst;
+  memset(&dst, 0, sizeof(struct inet_prefix));
+  dst.family = af;
+  switch (dst.family) {
+  case AF_INET:
+    dst.bytelen = 4;
+    dst.bitlen = prefix_len;
+    if (prefix_len < 32) {
+      dst.flags = 0x1; /* means that the prefix length is specified. */
+    }
+    memcpy(dst.data, addr, sizeof(struct in_addr));
+    break;
+
+  case AF_INET6:
+    dst.bytelen = 16;
+    dst.bitlen = prefix_len;
+    if (prefix_len < 128) {
+      dst.flags = 0x1; /* means that the prefix length is specified. */
+    }
+    memcpy(dst.data, addr, sizeof(struct in6_addr));
+    break;
+
+  default:
+    errx(EXIT_FAILURE, "unsupported address family %d.", af);
+  }
+  
+  struct rtattr *rta;
+  int rta_value_len;
+  /* Copy the destination address information to the rtmsg structure. */
+  m_nlmsg.m_rtmsg.rtm_dst_len = dst.bitlen;
+  rta_value_len = RTA_LENGTH(dst.bytelen);
+  if (NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len) + RTA_ALIGN(rta_value_len)
+      > sizeof(m_nlmsg)) {
+    errx(EXIT_FAILURE, "message must be smaller than %zd.", sizeof(m_nlmsg));
+  }
+  rta = (struct rtattr *)(((void *)(&m_nlmsg.m_nlmsghdr))
+			  + NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len));
+  rta->rta_type = RTA_DST;
+  rta->rta_len = rta_value_len;
+  memcpy(RTA_DATA(rta), dst.data, dst.bytelen);
+  m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len)
+    + RTA_ALIGN(rta_value_len);
+
+  /* Specify the ifindex of the tun interface. */
+  rta_value_len = RTA_LENGTH(4);
+  if (NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len) + RTA_ALIGN(rta_value_len)
+      > sizeof(m_nlmsg)) {
+    errx(EXIT_FAILURE, "message must be smaller than %zd.", sizeof(m_nlmsg));
+  }
+  rta = (struct rtattr *)(((void *)(&m_nlmsg.m_nlmsghdr))
+			  + NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len));
+  rta->rta_type = RTA_OIF;
+  rta->rta_len = rta_value_len;
+  uint32_t ifindex = if_nametoindex(tun_if_name);
+  memcpy(RTA_DATA(rta), &ifindex, sizeof(uint32_t));
+  m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len)
+    + RTA_ALIGN(rta_value_len);
+
+  int netlink_fd;
+  netlink_fd = socket(AF_NETLINK, SOCK_RAW, 0);
+  if (netlink_fd == -1) {
+    err(EXIT_FAILURE, "cannot open a netlink socket.");
+  }
+
+  struct iovec iov = {
+    .iov_base = (void *)&m_nlmsg.m_nlmsghdr,
+    .iov_len = m_nlmsg.m_nlmsghdr.nlmsg_len
+  };
+  struct sockaddr_nl so_nl;
+  struct msghdr msg = {
+    .msg_name = &so_nl,
+    .msg_namelen = sizeof(struct sockaddr_nl),
+    .msg_iov = &iov,
+    .msg_iovlen = 1
+  };
+  memset(&so_nl, 0, sizeof(struct sockaddr_nl));
+  so_nl.nl_family = AF_NETLINK;
+  static int seq = 0;
+  m_nlmsg.m_nlmsghdr.nlmsg_seq = ++seq;
+  ssize_t write_len;
+  write_len = sendmsg(netlink_fd, &msg, 0);
+  if (write_len == -1) {
+    err(EXIT_FAILURE, "failed to write to a netlink socket.");
+  }
+  
+  close (netlink_fd);
+
   return (0);
+}
 #else
+/*
+ * The addition procedure of a route entry for BSD.
+ */
+union sockunion {
+  struct sockaddr sa;
+  struct sockaddr_in sin;
+  struct sockaddr_in6 sin6;
+  struct sockaddr_dl sdl;
+};
+
+static int tun_make_netmask(union sockunion *, int, int);
+
+static int
+tun_make_netmask(union sockunion *mask, int af, int prefix_len)
+{
+  assert(mask != NULL);
+  assert(prefix_len > 0);
+
+  int max, q, r, sa_len;
+  char *p;
+
+  switch (af) {
+  case AF_INET:
+    max = 32;
+    sa_len = sizeof(struct sockaddr_in);
+    p = (char *)&mask->sin.sin_addr;
+    break;
+
+  case AF_INET6:
+    max = 128;
+    sa_len = sizeof(struct sockaddr_in6);
+    p = (char *)&mask->sin6.sin6_addr;
+    break;
+
+  default:
+    errx(EXIT_FAILURE, "unsupported address family %d.", af);
+  }
+
+  if (max < prefix_len) {
+    errx(EXIT_FAILURE, "invalid prefix length %d.", prefix_len);
+  }
+
+  q = prefix_len >> 3;
+  r = prefix_len & 7;
+  mask->sa.sa_family = af;
+  mask->sa.sa_len = sa_len;
+  memset((void *)p, 0, max / 8);
+  if (q > 0) {
+    memset((void *)p, 0xff, q);
+  }
+  if (r > 0) {
+    *((u_char *)p + q) = (0xff00 >> r) & 0xff;
+  }
+
+  return (0);
+}
+
+int
+tun_route_add(int af, const void *addr, int prefix_len)
+{
+  assert(addr != NULL);
+  assert(prefix_len > 0);
+
   int rtm_addrs = 0;
   int rtm_flags = RTF_UP|RTF_HOST|RTF_STATIC;
   union sockunion so_dst, so_gate, so_mask;
@@ -372,52 +541,5 @@ tun_route_add(int af, const void *addr, int prefix_len)
   close(route_fd);
 
   return (0);
-#endif
 }
-
-static int
-tun_make_netmask(union sockunion *mask, int af, int prefix_len)
-{
-  assert(mask != NULL);
-  assert(prefix_len > 0);
-
-  int max, q, r, sa_len;
-  char *p;
-
-  switch (af) {
-  case AF_INET:
-    max = 32;
-    sa_len = sizeof(struct sockaddr_in);
-    p = (char *)&mask->sin.sin_addr;
-    break;
-
-  case AF_INET6:
-    max = 128;
-    sa_len = sizeof(struct sockaddr_in6);
-    p = (char *)&mask->sin6.sin6_addr;
-    break;
-
-  default:
-    errx(EXIT_FAILURE, "unsupported address family %d.", af);
-  }
-
-  if (max < prefix_len) {
-    errx(EXIT_FAILURE, "invalid prefix length %d.", prefix_len);
-  }
-
-  q = prefix_len >> 3;
-  r = prefix_len & 7;
-  mask->sa.sa_family = af;
-#if !defined(__linux__)
-  mask->sa.sa_len = sa_len;
 #endif
-  memset((void *)p, 0, max / 8);
-  if (q > 0) {
-    memset((void *)p, 0xff, q);
-  }
-  if (r > 0) {
-    *((u_char *)p + q) = (0xff00 >> r) & 0xff;
-  }
-
-  return (0);
-}
