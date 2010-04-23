@@ -90,20 +90,17 @@ global address mapped to your server address.  If an IPv4 node
 contacts to 192.0.2.2, then your server (2001:db8:0:0::500) will
 receive an incoming packet from 64::cad6:56c5.
 
-To use the program, you need several routing/forwarding configuration
-on the mapping server.  The following is an example operation on
-FreeBSD, but you can do the equivalent operation in different
-operating systems.
+To use the program, you need to setup your node as a router by
+enabling forwarding function.  The following example is a sample
+startup operation procedure for FreeBSD operating system.
 
 # (run map646 in background.)
 # sysctl -w net.inet.ip.forwarding=1
 # sysctl -w net.inet6.ip6.forwarding=1
 
-The below is the example in Linux case.
+The below is an example in Linux case.
 
 # (run map646 in background)
-# ip -4 route add 192.0.2.0/24 dev tun646
-# ip -6 route add 64::/64 dev tun646
 # sysctl -w net.ipv4.conf.all.forwarding=1
 # sysctl -w net.ipv6.conf.all.forwarding=1
 
