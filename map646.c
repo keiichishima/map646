@@ -256,7 +256,7 @@ send_4to6(char *buf)
       /* ICMP to ICMPv6 conversion failed. */
       return (0);
     }
-    ip4_proto = IPPROTO_ICMP;
+    ip4_proto = IPPROTO_ICMPV6;
   }
 
   /*
