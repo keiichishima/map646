@@ -54,7 +54,6 @@
 
 #if defined(__linux__)
 #define IPV6_VERSION 0x60
-#define IPV6_DEFHLIM 64
 #endif
 
 #define BUF_LEN 1600
@@ -172,7 +171,7 @@ send_4to6(char *buf)
   struct ip *ip4_hdrp;
   struct in_addr ip4_src, ip4_dst;
   uint16_t ip4_tlen, ip4_hlen, ip4_plen;
-  uint8_t ip4_proto;
+  uint8_t ip4_ttl, ip4_proto;
   struct ip6_hdr ip6_hdr;
   struct in6_addr ip6_src, ip6_dst;
 
@@ -187,6 +186,7 @@ send_4to6(char *buf)
   ip4_tlen = ntohs(ip4_hdrp->ip_len);
   ip4_hlen = ip4_hdrp->ip_hl << 2;
   ip4_plen = ip4_tlen - ip4_hlen;
+  ip4_ttl = ip4_hdrp->ip_ttl;
   ip4_proto = ip4_hdrp->ip_p;
   /*
    * XXX: IPv4 fragment packets are not considered.
@@ -202,6 +202,7 @@ send_4to6(char *buf)
   fprintf(stderr, "dst = %s\n", inet_ntoa(ip4_dst));
   fprintf(stderr, "hlen = %d\n", ip4_hlen);
   fprintf(stderr, "plen = %d\n", ip4_plen);
+  fprintf(stderr, "ttl = %d\n", ip4_ttl);
   fprintf(stderr, "protocol = %d\n", ip4_proto);
 #endif
 
@@ -221,7 +222,7 @@ send_4to6(char *buf)
   ip6_hdr.ip6_vfc = IPV6_VERSION;
   ip6_hdr.ip6_plen = htons(ip4_plen);
   ip6_hdr.ip6_nxt = ip4_proto;
-  ip6_hdr.ip6_hlim = IPV6_DEFHLIM;
+  ip6_hdr.ip6_hlim = ip4_ttl;
   memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_src,
 	 sizeof(struct in6_addr));
   memcpy((void *)&ip6_hdr.ip6_dst, (const void *)&ip6_dst,
@@ -289,7 +290,7 @@ send_6to4(char *buf)
   struct ip6_hdr *ip6_hdrp;
   struct in6_addr ip6_src, ip6_dst;
   uint16_t ip6_payload_len;
-  uint8_t ip6_next_header;
+  uint8_t ip6_next_header, ip6_hop_limit;
   struct ip ip4_hdr;
   struct in_addr ip4_src, ip4_dst;
 
@@ -303,6 +304,7 @@ send_6to4(char *buf)
 	 sizeof(struct in6_addr));
   ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
   ip6_next_header = ip6_hdrp->ip6_nxt;
+  ip6_hop_limit = ip6_hdrp->ip6_hlim;
   /*
    * XXX: No IPv6 extension headers are supported so far.
    */
@@ -316,7 +318,8 @@ send_6to4(char *buf)
   fprintf(stderr, "dst = %s\n",
 	  inet_ntop(AF_INET6, &ip6_dst, addr_name, 64));
   fprintf(stderr, "plen = %d\n", ip6_payload_len);
-  fprintf(stderr, "nh = %d\n", ip6_next_header);
+  fprintf(stderr, "nxt = %d\n", ip6_next_header);
+  fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
 #endif
 
   /*
@@ -336,7 +339,7 @@ send_6to4(char *buf)
   ip4_hdr.ip_hl = sizeof(struct ip) >> 2;
   ip4_hdr.ip_len = htons(sizeof(struct ip) + ip6_payload_len);
   ip4_hdr.ip_id = random();
-  ip4_hdr.ip_ttl = IPDEFTTL;
+  ip4_hdr.ip_ttl = ip6_hop_limit;
   ip4_hdr.ip_p = ip6_next_header;
   ip4_hdr.ip_sum = 0; /* The header checksum is calculated later. */
   memcpy((void *)&ip4_hdr.ip_src, (const void *)&ip4_src,
