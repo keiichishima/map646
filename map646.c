@@ -58,8 +58,8 @@
 
 #define BUF_LEN 1600
 
-static int send_4to6(char *);
-static int send_6to4(char *);
+static int send_4to6(void *);
+static int send_6to4(void *);
 static uint16_t ip4_header_checksum(struct ip *);
 static int convert_icmp(int, struct iovec *);
 static uint16_t checksum(int32_t, const uint16_t *, int);
@@ -163,7 +163,7 @@ cleanup(void)
  * send it.
  */
 static int
-send_4to6(char *buf)
+send_4to6(void *buf)
 {
   assert (buf != NULL);
 
@@ -282,7 +282,7 @@ send_4to6(char *buf)
  * send it.
  */
 static int
-send_6to4(char *buf)
+send_6to4(void *buf)
 {
   assert(buf != NULL);
 
