@@ -1,4 +1,4 @@
-OBJS	= map646.o mapping.o tunif.o
+OBJS	= map646.o mapping.o tunif.o checksum.o
 
 CFLAGS	= -g -DDEBUG
 

@@ -46,11 +46,10 @@
 #include <netinet/ip6.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/icmp6.h>
-#include <netinet/tcp.h>
-#include <netinet/udp.h>
 
 #include "mapping.h"
 #include "tunif.h"
+#include "checksum.h"
 
 #if defined(__linux__)
 #define IPV6_VERSION 0x60
@@ -60,11 +59,7 @@
 
 static int send_4to6(void *);
 static int send_6to4(void *);
-static uint16_t ip4_header_checksum(struct ip *);
 static int convert_icmp(int, struct iovec *);
-static uint16_t checksum(int32_t, const uint16_t *, int);
-static int update_ulp_checksum(int, struct iovec *);
-static uint16_t ulp_checksum(struct iovec *);
 void cleanup_sigint(int);
 void cleanup(void);
 
@@ -263,7 +258,7 @@ send_4to6(void *buf)
   /*
    * Recalculate the checksum in TCP or UDP header.
    */
-  update_ulp_checksum(ip4_proto, iov);
+  cksum_update_ulp(ip4_proto, ip4_hdrp, iov);
 
   /*
    * Send it.
@@ -379,14 +374,14 @@ send_6to4(void *buf)
   /*
    * Calculate the IPv4 header checksum.
    */
-  ip4_hdr.ip_sum = ip4_header_checksum(&ip4_hdr);
+  ip4_hdr.ip_sum = cksum_calcsum_ip4_header(&ip4_hdr);
 
   /*
    * Recalculate the checksum for TCP and UDP.
    *
    * XXX: IPv6 extension headers are not supported.
    */
-  update_ulp_checksum(ip6_next_header, iov);
+  cksum_update_ulp(ip6_next_header, ip6_hdrp, iov);
 
   /*
    * Send it.
@@ -398,51 +393,6 @@ send_6to4(void *buf)
   }
 
   return (0);
-}
-
-/*
- * A support routine to calculate the 16 bits one's compliment of the
- * one's complement sum of the sequence of 16 bits data.
- */
-static uint16_t
-checksum(int32_t initial_sum, const uint16_t *data, int data_len)
-{
-  assert(data != NULL);
-
-  int32_t sum = initial_sum;
-
-  while (data_len > 1) {
-    sum += *data++;
-    data_len -= 2;
-  }
-
-  if (data_len) {
-    union {
-      uint8_t u_ui8[2];
-      uint16_t u_ui16;
-    } last_byte;
-    last_byte.u_ui16 = 0;
-    last_byte.u_ui8[0] = *(uint8_t *)data;
-    sum += last_byte.u_ui16;
-  }
-
-  /* add overflow counts */
-  while (sum >> 16)
-    sum  = (sum >> 16) + (sum & 0xffff);
-
-  return (~sum & 0xffff);
-}
-
-/*
- * IPv4 header checksum calculation.
- */
-static uint16_t
-ip4_header_checksum(struct ip *ip4_hdr)
-{
-  assert(ip4_hdr != NULL);
-
-  int ip4_header_len = ip4_hdr->ip_hl << 2;
-  return (checksum(0, (uint16_t *)ip4_hdr, ip4_header_len));
 }
 
 /*
@@ -509,122 +459,3 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 #if defined(__linux__)
 #undef icmp_type
 #endif
-
-/*
- * Calculate the transport layer checksum value based on the tranport
- * protocol number.
- *
- * The iov argument must be the same parameter to be passed to
- * writev() in the above translation functions (send_6to4() and
- * send_4to6()).
- *
- * iov[0]: Address family (uint32_t), or struct tun_pi{}
- * iov[1]: IP header
- * iov[2]: IP data
- */
-#if defined(__linux__)
-#define icmp_cksum checksum
-#define th_sum check
-#define uh_sum check
-#endif
-static int
-update_ulp_checksum(int ulp, struct iovec *iov)
-{
-  assert(iov != NULL);
-
-  struct tcphdr *tcp_hdrp;
-  struct udphdr *udp_hdrp;
-  struct icmphdr *icmp_hdrp;
-  struct icmp6_hdr *icmp6_hdrp;
-
-  switch (ulp) {
-  case IPPROTO_ICMP:
-    icmp_hdrp = iov[2].iov_base;
-    icmp_hdrp->icmp_cksum = 0;
-    icmp_hdrp->icmp_cksum = ulp_checksum(iov);
-    break;
-
-  case IPPROTO_ICMPV6:
-    icmp6_hdrp = iov[2].iov_base;
-    icmp6_hdrp->icmp6_cksum = 0;
-    icmp6_hdrp->icmp6_cksum = ulp_checksum(iov);
-    break;
-
-  case IPPROTO_TCP:
-    tcp_hdrp = iov[2].iov_base;
-    tcp_hdrp->th_sum = 0;
-    tcp_hdrp->th_sum = ulp_checksum(iov);
-    break;
-
-  case IPPROTO_UDP:
-    udp_hdrp = iov[2].iov_base;
-    udp_hdrp->uh_sum = 0;
-    udp_hdrp->uh_sum = ulp_checksum(iov);
-    break;
-
-  default:
-    warnx("unsupported upper layer protocol %d.", ulp);
-    return (-1);
-  }
-}
-#if defined(__linux__)
-#undef icmp_cksum
-#undef th_sum
-#undef uh_sum
-#endif
-
-static uint16_t
-ulp_checksum(struct iovec *iov)
-{
-  assert(iov != NULL);
-
-  struct ip *ip_hdrp;
-  struct ip6_hdr *ip6_hdrp;
-  int sum = 0;
-
-  uint16_t *srcp, *dstp;
-  int addr_len; /* in a unit of 2 octes. */
-  uint32_t af = 0;
-  af = tun_get_af(iov[0].iov_base);
-  switch (af) {
-  case AF_INET:
-    ip_hdrp = (struct ip *)iov[1].iov_base;
-    if (ip_hdrp->ip_p == IPPROTO_ICMP) {
-      /*
-       * ICMP doesn't need the IP pseudo header for its checksum
-       * calculation.
-       */
-      return (checksum(sum, (uint16_t *)iov[2].iov_base, iov[2].iov_len));
-    }
-    addr_len = 2;
-    srcp = (uint16_t *)&ip_hdrp->ip_src;
-    dstp = (uint16_t *)&ip_hdrp->ip_dst;
-    while (addr_len--) {
-      sum += *srcp++;
-      sum += *dstp++;
-    }
-    sum += htons(iov[2].iov_len);
-    sum += htons(ip_hdrp->ip_p);
-    break;
-
-  case AF_INET6:
-    ip6_hdrp = (struct ip6_hdr *)iov[1].iov_base;
-    addr_len = 8;
-    srcp = (uint16_t *)&ip6_hdrp->ip6_src;
-    dstp = (uint16_t *)&ip6_hdrp->ip6_dst;
-    while (addr_len--) {
-      sum += *srcp++;
-      sum += *dstp++;
-    }
-    sum += htons(iov[2].iov_len >> 16);
-    sum += htons(iov[2].iov_len & 0xffff);
-    sum += htons(ip6_hdrp->ip6_nxt);
-    break;
-
-  default:
-    warnx("unsupported address family %d for upper layer pseudo header calculation.", af);
-    return (0);
-  }
-
-  return (checksum(sum, (uint16_t *)iov[2].iov_base, iov[2].iov_len));
-}
