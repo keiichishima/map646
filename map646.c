@@ -63,6 +63,7 @@ static int send_4to6(char *);
 static int send_6to4(char *);
 static uint16_t ip4_header_checksum(struct ip *);
 static int convert_icmp(int, struct iovec *);
+static uint16_t checksum(int32_t, const uint16_t *, int);
 static int update_ulp_checksum(int, struct iovec *);
 static uint16_t ulp_checksum(struct iovec *);
 void cleanup_sigint(int);
@@ -404,11 +405,11 @@ send_6to4(char *buf)
  * one's complement sum of the sequence of 16 bits data.
  */
 static uint16_t
-checksum(int initial_sum, uint16_t *data, int data_len)
+checksum(int32_t initial_sum, const uint16_t *data, int data_len)
 {
   assert(data != NULL);
 
-  int sum = initial_sum;
+  int32_t sum = initial_sum;
 
   while (data_len > 1) {
     sum += *data++;
@@ -416,9 +417,13 @@ checksum(int initial_sum, uint16_t *data, int data_len)
   }
 
   if (data_len) {
-    uint16_t last_byte = 0;
-    *(uint8_t *)(&last_byte) = *(uint8_t *)data;
-    sum += last_byte;
+    union {
+      uint8_t u_ui8[2];
+      uint16_t u_ui16;
+    } last_byte;
+    last_byte.u_ui16 = 0;
+    last_byte.u_ui8[0] = *(uint8_t *)data;
+    sum += last_byte.u_ui16;
   }
 
   /* add overflow counts */
