@@ -261,8 +261,6 @@ send_4to6(char *buf)
 
   /*
    * Recalculate the checksum in TCP or UDP header.
-   *
-   * XXX: No ICMP/ICMPv6 support at this moment.
    */
   update_ulp_checksum(ip4_proto, iov);
 
@@ -383,7 +381,6 @@ send_6to4(char *buf)
   /*
    * Recalculate the checksum for TCP and UDP.
    *
-   * XXX: ICMP/ICMPv6 are not supported.
    * XXX: IPv6 extension headers are not supported.
    */
   update_ulp_checksum(ip6_next_header, iov);
