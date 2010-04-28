@@ -284,22 +284,22 @@ send_4to6(void *buf)
   iov[3].iov_len = ip4_plen;
 
   /*
-   * Handle the ICMP to ICMPv6 protocol conversion procedure.
-   */
-  if (ip4_proto == IPPROTO_ICMP) {
-    if (convert_icmp(ip4_proto, iov) == -1) {
-      /* ICMP to ICMPv6 conversion failed. */
-      return (0);
-    }
-    ip4_proto = IPPROTO_ICMPV6;
-  }
-
-  /*
    * Recalculate the checksum in ICMP/v6, TCP, or UDP header, if a
    * packet contains the upper layer protocol header.
    */
-  if (!ip4_is_frag || ip4_is_first_frag)
+  if (!ip4_is_frag || ip4_is_first_frag) {
+    /*
+     * Convert the ICMP type/code to those of ICMPv6.
+     */
+    if (ip4_proto == IPPROTO_ICMP) {
+      if (convert_icmp(ip4_proto, iov) == -1) {
+	/* ICMP to ICMPv6 conversion failed. */
+	return (0);
+      }
+      ip4_proto = IPPROTO_ICMPV6;
+    }
     cksum_update_ulp(ip4_proto, ip4_hdrp, iov);
+  }
 
   /*
    * Send it.
