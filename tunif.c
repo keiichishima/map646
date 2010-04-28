@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <err.h>
+#include <unistd.h>
 
 #if !defined(__linux__)
 #include <sys/types.h>

@@ -204,8 +204,18 @@ mapping_install_route(void)
 {
   struct mapping *mappingp;
   SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
-    tun_route_add(AF_INET, &mappingp->addr4, 32);
+    if (tun_route_add(AF_INET, &mappingp->addr4, 32) == -1) {
+      warnx("IPv4 host %s route entry addition failed.",
+	    inet_ntoa(mappingp->addr4));
+    }
   }
 
-  tun_route_add(AF_INET6, &mapping_prefix, 64);
+  if (tun_route_add(AF_INET6, &mapping_prefix, 64) == -1) {
+    char addr_name[64];
+    warnx("IPv6 pseudo mapping prefix %s route entry addition failed.",
+	  inet_ntop(AF_INET6, &mapping_prefix, addr_name, 64));
+    return (-1);
+  }
+
+  return (0);
 }

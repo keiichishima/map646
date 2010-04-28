@@ -1,6 +1,6 @@
 OBJS	= map646.o mapping.o tunif.o checksum.o
 
-CFLAGS	= -g -DDEBUG
+CFLAGS	= -Wall -g -DDEBUG
 
 .c.o:
 	gcc -c $(CFLAGS) $<

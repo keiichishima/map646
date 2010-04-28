@@ -28,9 +28,7 @@
 #include <signal.h>
 #include <assert.h>
 #include <err.h>
-#if !defined(__linux__)
 #include <unistd.h>
-#endif
 
 #include <sys/uio.h>
 #if !defined(__linux__)
