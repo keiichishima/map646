@@ -253,6 +253,12 @@ send_4to6(void *buf)
    */
   struct ip6_frag ip6_frag_hdr;
   if (ip4_is_frag) {
+    /*
+     * XXX: This usually doesn't work, since sizeof(IPv4 header) <
+     * sizeof(IPv6 header + Fragment header).  We need to send back
+     * ICMP_PARAMPROB w/ FLAG_NEEDED, or, fragment this packet into
+     * two pieces here.
+     */
     memset(&ip6_frag_hdr, 0, sizeof(struct ip6_frag));
     ip6_frag_hdr.ip6f_nxt = ip6_hdr.ip6_nxt;
     ip6_hdr.ip6_nxt = IPPROTO_FRAGMENT;
