@@ -25,7 +25,8 @@
 #ifndef __CHECKSUM_H__
 #define __CHECKSUM_H__
 
-uint16_t cksum_calcsum_ip4_header(struct ip *);
-int cksum_update_ulp(int, void *, struct iovec *);
+uint16_t cksum_calc_ip4_header(const struct ip *);
+int cksum_update_ulp(int, const void *, struct iovec *);
+int cksum_update_icmp_type_code(void *, int, int, int, int);
 
 #endif

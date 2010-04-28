@@ -167,8 +167,6 @@ send_4to6(void *buf)
   struct in_addr ip4_src, ip4_dst;
   uint16_t ip4_tlen, ip4_hlen, ip4_plen;
   uint8_t ip4_ttl, ip4_proto;
-  struct ip6_hdr ip6_hdr;
-  struct in6_addr ip6_src, ip6_dst;
 
   /* 
    * Analyze IPv4 header contents.
@@ -183,9 +181,7 @@ send_4to6(void *buf)
   ip4_plen = ip4_tlen - ip4_hlen;
   ip4_ttl = ip4_hdrp->ip_ttl;
   ip4_proto = ip4_hdrp->ip_p;
-  /*
-   * XXX: IPv4 fragment packets are not considered.
-   */
+
   /*
    * XXX: IPv4 options are not considered.
    */
@@ -204,6 +200,7 @@ send_4to6(void *buf)
   /*
    * Convert IP addresses.
    */
+  struct in6_addr ip6_src, ip6_dst;
   if (mapping_convert_addrs_4to6(&ip4_src, &ip4_dst,
 				 &ip6_src, &ip6_dst) == -1) {
     warnx("no mapping available. packet is dropped.");
@@ -213,6 +210,7 @@ send_4to6(void *buf)
   /*
    * Prepare an IPv6 header.
    */
+  struct ip6_hdr ip6_hdr;
   memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
   ip6_hdr.ip6_vfc = IPV6_VERSION;
   ip6_hdr.ip6_plen = htons(ip4_plen);
@@ -229,20 +227,23 @@ send_4to6(void *buf)
 	  inet_ntop(AF_INET6, &ip6_src, addr_name, 64));
   fprintf(stderr, "to dst = %s\n",
 	  inet_ntop(AF_INET6, &ip6_dst, addr_name, 64));
+  fprintf(stderr, "plen = %d\n", htons(ip6_hdr.ip6_plen));
 #endif
 
   /*
    * Construct IPv6 packet.
    */
-  struct iovec iov[3];
+  struct iovec iov[4];
   uint32_t af;
   tun_set_af(&af, AF_INET6);
   iov[0].iov_base = &af;
   iov[0].iov_len = sizeof(uint32_t);
   iov[1].iov_base = &ip6_hdr;
   iov[1].iov_len = sizeof(struct ip6_hdr);
-  iov[2].iov_base = bufp;
-  iov[2].iov_len = ip4_plen;
+  iov[2].iov_base = NULL;
+  iov[2].iov_len = 0;
+  iov[3].iov_base = bufp;
+  iov[3].iov_len = ip4_plen;
 
   /*
    * Handle the ICMP to ICMPv6 protocol conversion procedure.
@@ -256,7 +257,8 @@ send_4to6(void *buf)
   }
 
   /*
-   * Recalculate the checksum in TCP or UDP header.
+   * Recalculate the checksum in ICMP/v6, TCP, or UDP header, if a
+   * packet contains the upper layer protocol header.
    */
   cksum_update_ulp(ip4_proto, ip4_hdrp, iov);
 
@@ -264,7 +266,7 @@ send_4to6(void *buf)
    * Send it.
    */
   ssize_t write_len;
-  write_len = writev(tun_fd, iov, 3);
+  write_len = writev(tun_fd, iov, 4);
   if (write_len == -1) {
     warn("sending an IPv6 packet failed.");
   }
@@ -350,15 +352,17 @@ send_6to4(void *buf)
   /*
    * Construct IPv4 packet.
    */
-  struct iovec iov[3];
+  struct iovec iov[4];
   uint32_t af = 0;
   tun_set_af(&af, AF_INET);
   iov[0].iov_base = &af;
   iov[0].iov_len = sizeof(uint32_t);
   iov[1].iov_base = &ip4_hdr;
   iov[1].iov_len = sizeof(struct ip);
-  iov[2].iov_base = bufp;
-  iov[2].iov_len = ip6_payload_len;
+  iov[2].iov_base = NULL;
+  iov[2].iov_len = 0;
+  iov[3].iov_base = bufp;
+  iov[3].iov_len = ip6_payload_len;
 
   /*
    * Handle the ICMPv6 to ICMP protocol conversion procedure.
@@ -374,7 +378,7 @@ send_6to4(void *buf)
   /*
    * Calculate the IPv4 header checksum.
    */
-  ip4_hdr.ip_sum = cksum_calcsum_ip4_header(&ip4_hdr);
+  ip4_hdr.ip_sum = cksum_calc_ip4_header(&ip4_hdr);
 
   /*
    * Recalculate the checksum for TCP and UDP.
@@ -387,7 +391,7 @@ send_6to4(void *buf)
    * Send it.
    */
   ssize_t write_len;
-  write_len = writev(tun_fd, iov, 3);
+  write_len = writev(tun_fd, iov, 4);
   if (write_len == -1) {
     warn("sending an IPv4 packet failed.");
   }
@@ -401,6 +405,7 @@ send_6to4(void *buf)
  */
 #if defined(__linux__)
 #define icmp_type type
+#define icmp_code code
 #endif
 static int
 convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
@@ -416,14 +421,20 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 
   switch (incoming_icmp_protocol) {
   case IPPROTO_ICMP:
-    icmp_hdrp = iov[2].iov_base;
+    icmp_hdrp = iov[3].iov_base;
     switch (icmp_hdrp->icmp_type) {
     case ICMP_ECHO:
       icmp_hdrp->icmp_type = ICMP6_ECHO_REQUEST;
+      cksum_update_icmp_type_code(icmp_hdrp,
+				  ICMP_ECHO, icmp_hdrp->icmp_code,
+				  ICMP6_ECHO_REQUEST, icmp_hdrp->icmp_code);
       break;
 
     case ICMP_ECHOREPLY:
       icmp_hdrp->icmp_type = ICMP6_ECHO_REPLY;
+      cksum_update_icmp_type_code(icmp_hdrp,
+				  ICMP_ECHOREPLY, icmp_hdrp->icmp_code,
+				  ICMP6_ECHO_REPLY, icmp_hdrp->icmp_code);
       break;
 
     default:
@@ -435,14 +446,20 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
     break;
 
   case IPPROTO_ICMPV6:
-    icmp6_hdrp = iov[2].iov_base;
+    icmp6_hdrp = iov[3].iov_base;
     switch (icmp6_hdrp->icmp6_type) {
     case ICMP6_ECHO_REQUEST:
       icmp6_hdrp->icmp6_type = ICMP_ECHO;
+      cksum_update_icmp_type_code(icmp6_hdrp,
+				  ICMP6_ECHO_REQUEST, icmp6_hdrp->icmp6_code,
+				  ICMP_ECHO, icmp6_hdrp->icmp6_code);
       break;
 
     case ICMP6_ECHO_REPLY:
       icmp6_hdrp->icmp6_type = ICMP_ECHOREPLY;
+      cksum_update_icmp_type_code(icmp6_hdrp,
+				  ICMP6_ECHO_REPLY, icmp6_hdrp->icmp6_code,
+				  ICMP_ECHOREPLY, icmp6_hdrp->icmp6_code);
       break;
 
     default:
@@ -458,4 +475,5 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 }
 #if defined(__linux__)
 #undef icmp_type
+#undef icmp_code
 #endif

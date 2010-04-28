@@ -44,8 +44,8 @@
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 
-static uint16_t cksum_calcsum_ulp(struct iovec *);
-static int32_t cksum_acc_pip_header(const void *);
+static int32_t cksum_acc_ip_pheader_wo_payload_len(const void *);
+static int32_t cksum_acc_ip_pheader(const void *);
 static int32_t cksum_acc_words(const uint16_t *, int);
 
 #define ADDCARRY(s) {while ((s) >> 16) {((s) = ((s) >> 16) + ((s) & 0xffff));}}
@@ -54,7 +54,7 @@ static int32_t cksum_acc_words(const uint16_t *, int);
  * Calculate the checksum value of an IPv4 header.
  */
 uint16_t
-cksum_calcsum_ip4_header(struct ip *ip4_hdrp)
+cksum_calc_ip4_header(const struct ip *ip4_hdrp)
 {
   assert(ip4_hdrp != NULL);
 
@@ -77,7 +77,8 @@ cksum_calcsum_ip4_header(struct ip *ip4_hdrp)
  *
  * iov[0]: Address family (uint32_t), or struct tun_pi{}
  * iov[1]: IP header
- * iov[2]: IP data
+ * iov[2]: Fragment header (if necessary, otherwise NULL)
+ * iov[3]: IP data
  */
 #if defined(__linux__)
 #define icmp_cksum checksum
@@ -85,7 +86,7 @@ cksum_calcsum_ip4_header(struct ip *ip4_hdrp)
 #define uh_sum check
 #endif
 int
-cksum_update_ulp(int ulp, void *orig_ip_hdrp, struct iovec *iov)
+cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
 {
   assert(orig_ip_hdrp != NULL);
   assert(iov != NULL);
@@ -97,33 +98,49 @@ cksum_update_ulp(int ulp, void *orig_ip_hdrp, struct iovec *iov)
   int32_t sum;
   switch (ulp) {
   case IPPROTO_ICMP:
-    icmp_hdrp = iov[2].iov_base;
-    icmp_hdrp->icmp_cksum = 0;
-    icmp_hdrp->icmp_cksum = cksum_calcsum_ulp(iov);
+    icmp_hdrp = iov[3].iov_base;
+    sum = icmp_hdrp->icmp_cksum;
+    sum = ~sum & 0xffff;
+    sum -= cksum_acc_ip_pheader(orig_ip_hdrp);
+    /*
+     * ICMPv6 includes the sum of the pseudo IPv6 header in its
+     * checksum calculation, but ICMP doesn't.  We just subtract the
+     * original pseudo IPv6 header sum from the checksum value.
+     */
+    ADDCARRY(sum);
+    icmp_hdrp->icmp_cksum = ~sum & 0xffff;
     break;
 
   case IPPROTO_ICMPV6:
-    icmp6_hdrp = iov[2].iov_base;
-    icmp6_hdrp->icmp6_cksum = 0;
-    icmp6_hdrp->icmp6_cksum = cksum_calcsum_ulp(iov);
+    icmp6_hdrp = iov[3].iov_base;
+    sum = icmp6_hdrp->icmp6_cksum;
+    sum = ~sum & 0xffff;
+    sum += cksum_acc_ip_pheader(iov[1].iov_base);
+    /*
+     * Similar to the ICMP case, we just add the new pseudo IPv6
+     * header sum to the checksum value, since the original ICMP
+     * checksum doesn't include the IP pseudo header sum.
+     */
+    ADDCARRY(sum);
+    icmp6_hdrp->icmp6_cksum = ~sum & 0xffff;
     break;
 
   case IPPROTO_TCP:
-    tcp_hdrp = iov[2].iov_base;
+    tcp_hdrp = iov[3].iov_base;
     sum = tcp_hdrp->th_sum;
     sum = ~sum & 0xffff;
-    sum -= cksum_acc_pip_header(orig_ip_hdrp);
-    sum += cksum_acc_pip_header(iov[1].iov_base);
+    sum -= cksum_acc_ip_pheader_wo_payload_len(orig_ip_hdrp);
+    sum += cksum_acc_ip_pheader_wo_payload_len(iov[1].iov_base);
     ADDCARRY(sum);
     tcp_hdrp->th_sum = ~sum & 0xffff;
     break;
 
   case IPPROTO_UDP:
-    udp_hdrp = iov[2].iov_base;
+    udp_hdrp = iov[3].iov_base;
     sum = udp_hdrp->uh_sum;
     sum = ~sum & 0xffff;
-    sum -= cksum_acc_pip_header(orig_ip_hdrp);
-    sum += cksum_acc_pip_header(iov[1].iov_base);
+    sum -= cksum_acc_ip_pheader_wo_payload_len(orig_ip_hdrp);
+    sum += cksum_acc_ip_pheader_wo_payload_len(iov[1].iov_base);
     ADDCARRY(sum);
     udp_hdrp->uh_sum = ~sum & 0xffff;
     break;
@@ -142,63 +159,50 @@ cksum_update_ulp(int ulp, void *orig_ip_hdrp, struct iovec *iov)
 #endif
 
 /*
- * Calculate the checksum value of the upper layer protocol.
- *
- * The iov parameter is the same value as that of cksum_update_ulp()
- * function.
+ * Adjust the checksum value of an ICMP/ICMPv6 packet, based on the
+ * original type/code values and new type/code values.
  */
-static uint16_t
-cksum_calcsum_ulp(struct iovec *iov)
+int
+cksum_update_icmp_type_code(void *icmp46_hdrp, int orig_type, int orig_code,
+			    int new_type, int new_code)
 {
-  assert(iov != NULL);
+  assert(icmp46_hdrp != NULL);
 
-  struct ip *ip_hdrp;
-  int32_t sum = 0;
-  uint32_t af = 0;
-  af = tun_get_af(iov[0].iov_base);
-  switch (af) {
-  case AF_INET:
-    ip_hdrp = (struct ip *)iov[1].iov_base;
-    if (ip_hdrp->ip_p == IPPROTO_ICMP) {
-      /*
-       * ICMP doesn't need the IP pseudo header for its checksum
-       * calculation.
-       */
-      sum = cksum_acc_words((uint16_t *)iov[2].iov_base, iov[2].iov_len);
-      ADDCARRY(sum);
-
-      return (~sum & 0xffff);
-    }
-    /* fall through. */
-  case AF_INET6:
-    sum += cksum_acc_pip_header(iov[1].iov_base);
-    sum += cksum_acc_words((uint16_t *)iov[2].iov_base, iov[2].iov_len);
-    break;
-
-  default:
-    warnx("unsupported address family %d.", af);
-    return (0);
-  }
-
+  struct icmp6_hdr *icmp6_hdrp = icmp46_hdrp;
+  int32_t sum = icmp6_hdrp->icmp6_cksum;
+  sum = ~sum & 0xffff;
+  uint8_t typecode[2];
+  typecode[0] = orig_type;
+  typecode[1] = orig_code;
+  sum -= cksum_acc_words((const uint16_t *)typecode, 2);
+  typecode[0] = new_type;
+  typecode[1] = new_code;
+  sum += cksum_acc_words((const uint16_t *)typecode, 2);
   ADDCARRY(sum);
+  icmp6_hdrp->icmp6_cksum = ~sum & 0xffff;
 
-  return (~sum & 0xffff);
+  return (0);
 }
 
 /*
- * Calculate the sum of the pseudo IP header spliting into 16 bits
- * integer values.
+ * Calculate the sum of the pseudo IP header by spliting it into 16
+ * bits integer values.
+ *
+ * Note that this function doesn't count the payload length field,
+ * since the value doesn't change while translating the IP version.
+ * If you need a complete sum of the pseudo header, use the
+ * cksum_acc_ip_pheader() function.
  */
 static int32_t
-cksum_acc_pip_header(const void *pip_hdrp)
+cksum_acc_ip_pheader_wo_payload_len(const void *ip_phdrp)
 {
-  assert(pip_hdrp != NULL);
+  assert(ip_phdrp != NULL);
 
   int32_t sum = 0;
   int addr_len;
   uint16_t *srcp, *dstp;
-  const struct ip *ip4_hdrp = pip_hdrp;
-  const struct ip6_hdr *ip6_hdrp = pip_hdrp;
+  const struct ip *ip4_hdrp = ip_phdrp;
+  const struct ip6_hdr *ip6_hdrp = ip_phdrp;
   int version = ip4_hdrp->ip_v;
   switch (version) {
   case 4:
@@ -209,7 +213,20 @@ cksum_acc_pip_header(const void *pip_hdrp)
       sum += *srcp++;
       sum += *dstp++;
     }
+    /*
+     * We don't add the length field of the pseudo header, assuming
+     * that the value doesn't change before and after translation.
+     * This is important when handling fragment packets.  The change
+     * of the length means the change of the contents of the payload,
+     * which leads checksum re-calculation over the entire contents
+     * (or we need to find the location of the difference).
+     *
+     * If you need a complete pseudo header sum, use the
+     * cksum_acc_ip_pheader() function instead.
+     */
+#if 0
     sum += htons((ntohs(ip4_hdrp->ip_len) - (ip4_hdrp->ip_hl << 2)));
+#endif
     sum += htons(ip4_hdrp->ip_p);
     break;
 
@@ -221,8 +238,11 @@ cksum_acc_pip_header(const void *pip_hdrp)
       sum += *srcp++;
       sum += *dstp++;
     }
+    /* Same as the IPv4 case. */
+#if 0
     sum += ip6_hdrp->ip6_plen >> 16; /* for jumbo payload? */
     sum += ip6_hdrp->ip6_plen & 0xffff;
+#endif
     sum += htons(ip6_hdrp->ip6_nxt);
     break;
 
@@ -230,6 +250,35 @@ cksum_acc_pip_header(const void *pip_hdrp)
     warnx("unsupported IP version %d.", version);
     return (0);
   }
+
+  return (sum);
+}
+
+static int32_t
+cksum_acc_ip_pheader(const void *ip_phdrp)
+{
+  assert(ip_phdrp != NULL);
+
+  const struct ip *ip4_hdrp = ip_phdrp;
+  const struct ip6_hdr *ip6_hdrp = ip_phdrp;
+  int32_t sum = 0;
+  int version = ip4_hdrp->ip_v;
+  switch (version) {
+  case 4:
+    sum += htons((ntohs(ip4_hdrp->ip_len) - (ip4_hdrp->ip_hl << 2)));
+    break;
+
+  case 6:
+    sum += ip6_hdrp->ip6_plen >> 16; /* for jumbo payload? */
+    sum += ip6_hdrp->ip6_plen & 0xffff;
+    break;
+
+  default:
+    warnx("unsupported IP version %d.", version);
+    return (0);
+  }
+
+  sum += cksum_acc_ip_pheader_wo_payload_len(ip_phdrp);
 
   return (sum);
 }
