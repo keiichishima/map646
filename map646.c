@@ -174,6 +174,11 @@ send_4to6(void *buf)
    * Analyze IPv4 header contents.
    */
   ip4_hdrp = (struct ip *)bufp;
+  /* IPv4 options are not supported. */
+  if (ip4_hdrp->ip_hl << 2 != sizeof(struct ip)) {
+    warnx("IPv4 options are not supported.");
+    return (0);
+  }
   memcpy((void *)&ip4_src, (const void *)&ip4_hdrp->ip_src,
 	 sizeof(struct in_addr));
   memcpy((void *)&ip4_dst, (const void *)&ip4_hdrp->ip_dst,
@@ -185,9 +190,6 @@ send_4to6(void *buf)
   ip4_proto = ip4_hdrp->ip_p;
   /*
    * XXX: IPv4 fragment packets are not considered.
-   */
-  /*
-   * XXX: IPv4 options are not considered.
    */
 
   bufp += ip4_hlen;
