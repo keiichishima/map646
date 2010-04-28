@@ -183,6 +183,25 @@ send_4to6(void *buf)
   ip4_proto = ip4_hdrp->ip_p;
 
   /*
+   * Fragment information check.
+   */
+  int ip4_id = ntohs(ip4_hdrp->ip_id);
+  int ip4_off_flags = ntohs(ip4_hdrp->ip_off);
+  int ip4_offset = ip4_off_flags & IP_OFFMASK;
+  int ip4_more_frag = ip4_off_flags & IP_MF;
+  int ip4_is_frag = 0;
+  int ip4_is_first_frag = 0;
+  if (ip4_offset != 0) {
+    /* This is one of the fragmented packets, except the first one. */
+    ip4_is_frag = 1;
+  }
+  if (ip4_more_frag && ip4_offset == 0) {
+    /* This is the first fragmented packet. */
+    ip4_is_frag = 1;
+    ip4_is_first_frag = 1;
+  }
+
+  /*
    * XXX: IPv4 options are not considered.
    */
 
@@ -213,7 +232,8 @@ send_4to6(void *buf)
   struct ip6_hdr ip6_hdr;
   memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
   ip6_hdr.ip6_vfc = IPV6_VERSION;
-  ip6_hdr.ip6_plen = htons(ip4_plen);
+  ip6_hdr.ip6_plen = htons(ip4_plen
+			   + (ip4_is_frag ? sizeof(struct ip6_frag) : 0));
   ip6_hdr.ip6_nxt = ip4_proto;
   ip6_hdr.ip6_hlim = ip4_ttl;
   memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_src,
@@ -231,6 +251,21 @@ send_4to6(void *buf)
 #endif
 
   /*
+   * Prepare a fragment header.
+   */
+  struct ip6_frag ip6_frag_hdr;
+  if (ip4_is_frag) {
+    memset(&ip6_frag_hdr, 0, sizeof(struct ip6_frag));
+    ip6_frag_hdr.ip6f_nxt = ip6_hdr.ip6_nxt;
+    ip6_hdr.ip6_nxt = IPPROTO_FRAGMENT;
+    ip6_frag_hdr.ip6f_offlg = htons(ip4_offset << 3);
+    if (ip4_more_frag) {
+      ip6_frag_hdr.ip6f_offlg |= IP6F_MORE_FRAG;
+    }
+    ip6_frag_hdr.ip6f_ident = htonl(ip4_id);
+  }
+
+  /*
    * Construct IPv6 packet.
    */
   struct iovec iov[4];
@@ -240,8 +275,13 @@ send_4to6(void *buf)
   iov[0].iov_len = sizeof(uint32_t);
   iov[1].iov_base = &ip6_hdr;
   iov[1].iov_len = sizeof(struct ip6_hdr);
-  iov[2].iov_base = NULL;
-  iov[2].iov_len = 0;
+  if (ip4_is_frag) {
+    iov[2].iov_base = &ip6_frag_hdr;
+    iov[2].iov_len = sizeof(struct ip6_frag);
+  } else {
+    iov[2].iov_base = NULL;
+    iov[2].iov_len = 0;
+  }
   iov[3].iov_base = bufp;
   iov[3].iov_len = ip4_plen;
 
@@ -260,7 +300,8 @@ send_4to6(void *buf)
    * Recalculate the checksum in ICMP/v6, TCP, or UDP header, if a
    * packet contains the upper layer protocol header.
    */
-  cksum_update_ulp(ip4_proto, ip4_hdrp, iov);
+  if (!ip4_is_frag || ip4_is_first_frag)
+    cksum_update_ulp(ip4_proto, ip4_hdrp, iov);
 
   /*
    * Send it.
