@@ -170,6 +170,11 @@ send_4to6(void *buf)
    * Analyze IPv4 header contents.
    */
   ip4_hdrp = (struct ip *)bufp;
+  /* IPv4 options are not supported. */
+  if (ip4_hdrp->ip_hl << 2 != sizeof(struct ip)) {
+    warnx("IPv4 options are not supported.");
+    return (0);
+  }
   memcpy((void *)&ip4_src, (const void *)&ip4_hdrp->ip_src,
 	 sizeof(struct in_addr));
   memcpy((void *)&ip4_dst, (const void *)&ip4_hdrp->ip_dst,
@@ -340,16 +345,23 @@ send_6to4(void *buf)
    * Analyze IPv6 header contents.
    */
   ip6_hdrp = (struct ip6_hdr *)bufp;
+  ip6_next_header = ip6_hdrp->ip6_nxt;
+  /*
+   * Next header check: Currently, any kind of extension headers
+   * are not supported and just dropped.
+   */
+  if (ip6_next_header != IPPROTO_ICMPV6
+      && ip6_next_header != IPPROTO_TCP
+      && ip6_next_header != IPPROTO_UDP) {
+    warnx("Extention header %d is not supported.", ip6_next_header);
+    return (0);
+  }
   memcpy((void *)&ip6_src, (const void *)&ip6_hdrp->ip6_src,
 	 sizeof(struct in6_addr));
   memcpy((void *)&ip6_dst, (const void *)&ip6_hdrp->ip6_dst,
 	 sizeof(struct in6_addr));
   ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
-  ip6_next_header = ip6_hdrp->ip6_nxt;
   ip6_hop_limit = ip6_hdrp->ip6_hlim;
-  /*
-   * XXX: No IPv6 extension headers are supported so far.
-   */
   
   bufp += sizeof(struct ip6_hdr);
 
