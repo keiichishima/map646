@@ -23,6 +23,11 @@
  */
 
 #include <stdlib.h>
+#if !defined(__linux__)
+#define _WITH_GETLINE
+#else
+#define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
