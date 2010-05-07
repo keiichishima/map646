@@ -28,6 +28,7 @@
 #include <sys/queue.h>
 
 int mapping_create_table(const char *map646_conf_path);
+void mapping_destroy_table(void);
 int mapping_convert_addrs_4to6(const struct in_addr *,
 			       const struct in_addr *,
 			       struct in6_addr *,
@@ -37,5 +38,6 @@ int mapping_convert_addrs_6to4(const struct in6_addr *,
 			       struct in_addr *,
 			       struct in_addr *);
 int mapping_install_route(void);
+int mapping_uninstall_route(void);
 
 #endif

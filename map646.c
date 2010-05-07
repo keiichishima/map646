@@ -60,6 +60,7 @@ static int send_6to4(void *);
 static int convert_icmp(int, struct iovec *);
 void cleanup_sigint(int);
 void cleanup(void);
+void reload_sighup(int);
 
 int tun_fd;
 char *map646_conf_path = "/etc/map646.conf";
@@ -72,6 +73,9 @@ main(int argc, char *argv[])
   }
   if (signal(SIGINT, cleanup_sigint) == SIG_ERR) {
     err(EXIT_FAILURE, "failed to register a SIGINT hook.");
+  }
+  if (signal(SIGHUP, reload_sighup) == SIG_ERR) {
+    err(EXIT_FAILURE, "failed to register a SIGHUP hook.");
   }
 
   /* Create mapping table from the configuraion file. */
@@ -127,7 +131,7 @@ main(int argc, char *argv[])
 
 /*
  * The clenaup routine called when SIGINT is received, typically when
- * the program is terminating..
+ * the program is terminating.
  */
 void
 cleanup_sigint(int dummy)
@@ -149,6 +153,39 @@ cleanup(void)
 #if !defined(__linux__)
   (void)tun_dealloc(tun_if_name);
 #endif
+}
+
+/*
+ * The reload function deletes all the route information installed by
+ * this program, reload the configuration file, and re-install the new
+ * route information given by the configuration file.
+ */
+void
+reload_sighup(int dummy)
+{
+  /* 
+   * Uninstall all the route installed when the configuration file was
+   * read last time.
+   */
+  if (mapping_uninstall_route() == -1) {
+    warnx("failed to uninstall route entries created before.  should we continue?");
+  }
+
+  /* Destroy the mapping table. */
+  mapping_destroy_table();
+
+  /* Create a new mapping table from the configuraion file. */
+  if (mapping_create_table(map646_conf_path) == -1) {
+    errx(EXIT_FAILURE, "mapping table creation failed.");
+  }
+
+  /*
+   * Install necessary route entries based on the mapping table
+   * information.
+   */
+  if (mapping_install_route() == -1) {
+    errx(EXIT_FAILURE, "failed to install mapped route information.");
+  }
 }
 
 /*
