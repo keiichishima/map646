@@ -35,7 +35,8 @@ int tun_dealloc(const char *);
 #endif
 uint32_t tun_get_af(const void *);
 int tun_set_af(void *, uint32_t);
-int tun_route_add(int, const void *, int);
+int tun_add_route(int, const void *, int);
+int tun_delete_route(int, const void *, int);
 
 #endif
 

@@ -102,6 +102,18 @@ mapping_create_table(const char *map646_conf_path)
   return (0);
 }
 
+void
+mapping_destroy_table(void)
+{
+  memset(&mapping_prefix, 0, sizeof(struct in6_addr));
+
+  while (!SLIST_EMPTY(&mapping_list_head)) {
+    struct mapping *mp = SLIST_FIRST(&mapping_list_head);
+    free(mp);
+    SLIST_REMOVE_HEAD(&mapping_list_head, mappings);
+  }
+}
+
 /*
  * Converts IPv4 addresses to corresponding IPv6 addresses, based on
  * the IPv4 address information (specified as the first 2 arguments)
@@ -204,8 +216,39 @@ mapping_install_route(void)
 {
   struct mapping *mappingp;
   SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
-    tun_route_add(AF_INET, &mappingp->addr4, 32);
+    if (tun_add_route(AF_INET, &mappingp->addr4, 32) == -1) {
+      warnx("IPv4 host %s route entry addition failed.",
+            inet_ntoa(mappingp->addr4));
+    }
   }
 
-  tun_route_add(AF_INET6, &mapping_prefix, 64);
+  if (tun_add_route(AF_INET6, &mapping_prefix, 64) == -1) {
+    char addr_name[64];
+    warnx("IPv6 pseudo mapping prefix %s route entry addition failed.",
+	  inet_ntop(AF_INET6, &mapping_prefix, addr_name, 64));
+    return (-1);
+  }
+
+  return (0);
+}
+
+int
+mapping_uninstall_route(void)
+{
+  struct mapping *mappingp;
+  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+    if (tun_delete_route(AF_INET, &mappingp->addr4, 32) == -1) {
+      warnx("IPv4 host %s route entry deletion failed.",
+            inet_ntoa(mappingp->addr4));
+    }
+  }
+
+  if (tun_delete_route(AF_INET6, &mapping_prefix, 64) == -1) {
+    char addr_name[64];
+    warnx("IPv6 pseudo mapping prefix %s route entry deletion failed.",
+	  inet_ntop(AF_INET6, &mapping_prefix, addr_name, 64));
+    return (-1);
+  }
+
+  return (0);
 }

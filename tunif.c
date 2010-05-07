@@ -52,6 +52,8 @@
 
 char tun_if_name[IFNAMSIZ];
 
+static int tun_op_route(int, int, const void *, int);
+
 /*
  * Create a new tun interface with the given name.  If the name
  * exists, just return an error.
@@ -252,10 +254,21 @@ tun_set_af(void *buf, uint32_t af)
 }
 
 #if defined(__linux__)
-/*
- * The addition procedure of a route entry for Linux.
- */
+/* The addition procedure of a route entry for Linux. */
+int
+tun_add_route(int af, const void *addr, int prefix_len)
+{
+  return (tun_op_route(RTM_NEWROUTE, af, addr, prefix_len));
+}
 
+/* The deletion procedure of a route entry for Linux. */
+int
+tun_delete_route(int af, const void *addr, int prefix_len)
+{
+  return (tun_op_route(RTM_DELROUTE, af, addr, prefix_len));
+}
+
+/* Stub routin for route addition/deletion. */
 struct inet_prefix {
   uint8_t family;
   uint8_t bytelen;
@@ -264,9 +277,11 @@ struct inet_prefix {
   uint32_t data[8];
 };
 
-int
-tun_route_add(int af, const void *addr, int prefix_len)
+static int
+tun_op_route(int op, int af, const void *addr, int prefix_len)
 {
+  assert(op == RTM_NEWROUTE
+	 || op == RTM_DELROUTE);
   assert(addr != NULL);
   assert(prefix_len > 0);
 
@@ -278,13 +293,26 @@ tun_route_add(int af, const void *addr, int prefix_len)
 
   memset(&m_nlmsg, 0, sizeof(m_nlmsg));
   m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-  m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
-  m_nlmsg.m_nlmsghdr.nlmsg_type = RTM_NEWROUTE;
+  m_nlmsg.m_nlmsghdr.nlmsg_type = op;
   m_nlmsg.m_rtmsg.rtm_family = af;
   m_nlmsg.m_rtmsg.rtm_table = RT_TABLE_MAIN;
-  m_nlmsg.m_rtmsg.rtm_protocol = RTPROT_BOOT;
-  m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_UNIVERSE;
-  m_nlmsg.m_rtmsg.rtm_type = RTN_UNICAST;
+  switch (op) {
+  case RTM_NEWROUTE:
+    m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
+    m_nlmsg.m_rtmsg.rtm_protocol = RTPROT_BOOT;
+    m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_UNIVERSE;
+    m_nlmsg.m_rtmsg.rtm_type = RTN_UNICAST;
+    break;
+
+  case RTM_DELROUTE:
+    m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+    m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_NOWHERE;
+    break;
+
+  default:
+    /* Never reached.  All other operations will be asserted. */
+    break;
+  }
 
   /* construct the destination address information. */
   struct inet_prefix dst;
@@ -377,8 +405,23 @@ tun_route_add(int af, const void *addr, int prefix_len)
   return (0);
 }
 #else
+/* The addition procedure of a route entry for BSD. */
+int
+tun_add_route(int af, const void *addr, int prefix_len)
+{
+  return (tun_op_route(RTM_ADD, af, addr, prefix_len));
+}
+
+/* The deletion procedure of a route entry for BSD. */
+int
+tun_delete_route(int af, const void *addr, int prefix_len)
+{
+  return (tun_op_route(RTM_DELETE, af, addr, prefix_len));
+}
+
 /*
- * The addition procedure of a route entry for BSD.
+ * make a sockaddr structure indicating netmask pattern based on the
+ * prefix length.
  */
 union sockunion {
   struct sockaddr sa;
@@ -434,15 +477,38 @@ tun_make_netmask(union sockunion *mask, int af, int prefix_len)
   return (0);
 }
 
+/* Stub routine for route addition/deletion. */
+#define NEXTADDR(w, u) \
+  if (rtm_addrs & (w)) { \
+    l = SA_SIZE(&(u.sa)); memmove(cp, &(u), l); cp += l; \
+  }
 int
-tun_route_add(int af, const void *addr, int prefix_len)
+tun_op_route(int op, int af, const void *addr, int prefix_len)
 {
+  assert(op == RTM_ADD
+	 || op == RTM_DELETE);
   assert(addr != NULL);
   assert(prefix_len > 0);
 
   int rtm_addrs = 0;
-  int rtm_flags = RTF_UP|RTF_HOST|RTF_STATIC;
+  int rtm_flags;
   union sockunion so_dst, so_gate, so_mask;
+
+  switch (op) {
+  case RTM_ADD:
+    rtm_flags = RTF_UP|RTF_HOST|RTF_STATIC;
+    /* RTF_HOST will be unset later if the addr is a network address. */
+    break;
+
+  case RTM_DELETE:
+    rtm_flags = RTF_HOST|RTF_STATIC;
+    /* RTF_HOST will be unset later if the addr is a network address. */
+    break;
+
+  default:
+    /* Never reached.  All other operations will be asserted. */
+    break;
+  }
 
   switch (af) {
   case AF_INET:
@@ -515,15 +581,11 @@ tun_route_add(int af, const void *addr, int prefix_len)
   int l;
   static int seq = 0;
   memset(&m_rtmsg, 0, sizeof(m_rtmsg));
-  m_rtmsg.m_rtm.rtm_type = RTM_ADD;
+  m_rtmsg.m_rtm.rtm_type = op;
   m_rtmsg.m_rtm.rtm_flags = rtm_flags;
   m_rtmsg.m_rtm.rtm_version = RTM_VERSION;
   m_rtmsg.m_rtm.rtm_seq = ++seq;
   m_rtmsg.m_rtm.rtm_addrs = rtm_addrs;
-#define NEXTADDR(w, u) \
-  if (rtm_addrs & (w)) { \
-    l = SA_SIZE(&(u.sa)); memmove(cp, &(u), l); cp += l; \
-  }
   NEXTADDR(RTA_DST, so_dst);
   NEXTADDR(RTA_GATEWAY, so_gate);
   NEXTADDR(RTA_NETMASK, so_mask);
