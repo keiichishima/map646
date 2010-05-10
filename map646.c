@@ -291,8 +291,11 @@ send_4to6(void *buf)
     /* Fragment is needed for this packet. */
     struct ip6_frag ip6_frag_hdr;
     memset(&ip6_frag_hdr, 0, sizeof(struct ip6_frag));
-    /* XXX: ip4_id may be 0 if the incoming packet is not a fragmented
-       packet. */
+    if (ip4_id == 0) {
+      /* ip4_id may be 0 if the incoming packet is not a fragmented
+	 packet. */
+      ip4_id = random();
+    }
     ip6_frag_hdr.ip6f_ident = htonl(ip4_id);
 
     int frag_count = (ntohs(ip6_hdr.ip6_plen) / frag_payload_unit) + 1;
