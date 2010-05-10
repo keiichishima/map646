@@ -231,15 +231,9 @@ send_4to6(void *buf)
   int ip4_offset = ip4_off_flags & IP_OFFMASK;
   int ip4_more_frag = ip4_off_flags & IP_MF;
   int ip4_is_frag = 0;
-  int ip4_is_first_frag = 0;
   if (ip4_offset != 0) {
     /* This is one of the fragmented packets, except the first one. */
     ip4_is_frag = 1;
-  }
-  if (ip4_more_frag && ip4_offset == 0) {
-    /* This is the first fragmented packet. */
-    ip4_is_frag = 1;
-    ip4_is_first_frag = 1;
   }
 
   /*
