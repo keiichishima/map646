@@ -75,9 +75,7 @@ tun_alloc(char *tun_if_name)
   }
 
 #if defined(__linux__)
-  /*
-   * Create a new tun device.
-   */
+  /* Create a new tun device. */
   int tun_fd;
   tun_fd = open("/dev/net/tun", O_RDWR);
   if (tun_fd == -1) {
@@ -90,18 +88,16 @@ tun_alloc(char *tun_if_name)
   strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
   if (ioctl(tun_fd, TUNSETIFF, (void *)&ifr) == -1) {
     close(tun_fd);
-    err(EXIT_FAILURE, "cannot create a tun interface %s.\n", tun_if_name);
+    err(EXIT_FAILURE, "cannot create %s interface.", tun_if_name);
   }
   strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
 #else
-  /*
-   * Create a new tun device.
-   */
+  /* Create a new tun device. */
   struct ifreq ifr;
   memset(&ifr, 0, sizeof(struct ifreq));
   strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
   if (ioctl(udp_fd, SIOCIFCREATE2, &ifr) == -1) {
-    err(EXIT_FAILURE, "cannot create %s interface.", ifr.ifr_name);
+    err(EXIT_FAILURE, "cannot create %s interface.", tun_if_name);
   }
   strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
 
@@ -114,13 +110,23 @@ tun_alloc(char *tun_if_name)
   if (tun_fd == -1) {
     err(EXIT_FAILURE, "cannot open a tun device %s.", tun_dev_name);
   }
+
+  /*
+   * Set the interface mode to the point-to-point mode only.  We don't
+   * set the multicast flag set to avoid unnecessary ND/MLD
+   * operations.
+   */
   int tun_iff_mode = IFF_POINTOPOINT;
   if (ioctl(tun_fd, TUNSIFMODE, &tun_iff_mode) == -1) {
     err(EXIT_FAILURE, "failed to set TUNSIFMODE to %x.\n", tun_iff_mode);
   }
+
   /*
-   * TUNSIFHEAD enables the address family information prepending
-   * procedure before the actual packets.
+   * By setting the TUNSIFHEAD flag, all the packets received from the
+   * tun device will have uint32_t address family information just
+   * before the actual packet data.  Similarly, the uint32_t address
+   * family information must be prepended when sending a packet to the
+   * tun interface.
    */
   int on = 1;
   if (ioctl(tun_fd, TUNSIFHEAD, &on) == -1) {
@@ -128,9 +134,7 @@ tun_alloc(char *tun_if_name)
   }
 #endif
 
-  /*
-   * Make the tun device up.
-   */
+  /* Make the tun device up. */
   memset(&ifr, 0, sizeof(struct ifreq));
   ifr.ifr_flags = IFF_UP;
   strncpy(ifr.ifr_name, tun_if_name, IFNAMSIZ);
@@ -143,13 +147,13 @@ tun_alloc(char *tun_if_name)
   return (tun_fd);
 }
 
+#if !defined(__linux__)
 /*
  * Delete the tun interface created at launch time.  This code is
  * required only for BSD operating system.  In Linux systems, the tun
  * interface is deleted automatically when the process that created
- * the tun interface exits.
+ * the tun interface dies.
  */
-#if !defined(__linux__)
 int
 tun_dealloc(const char *tun_if_name)
 {
@@ -183,8 +187,8 @@ tun_dealloc(const char *tun_if_name)
  * must be longer than 4 bytes.
  *
  * In BSD systems, the address family information is stored in
- * uint32_t type at the beginning of a packet.  In Linux systems,
- * struct tun_pi{} is prepended instead.  The proto member variable
+ * uint32_t type at the beginning of a packet.  In Linux systems, the
+ * tun_pi{} structure is prepended instead.  The proto member variable
  * includes the Ether frame type of the contents.
  */
 uint32_t
@@ -269,7 +273,7 @@ tun_delete_route(int af, const void *addr, int prefix_len)
   return (tun_op_route(RTM_DELROUTE, af, addr, prefix_len));
 }
 
-/* Stub routin for route addition/deletion. */
+/* Stub routine for route addition/deletion. */
 struct inet_prefix {
   uint8_t family;
   uint8_t bytelen;
@@ -339,7 +343,8 @@ tun_op_route(int op, int af, const void *addr, int prefix_len)
     break;
 
   default:
-    errx(EXIT_FAILURE, "unsupported address family %d.", af);
+    warnx("unsupported address family %d.", af);
+    return (-1);
   }
   
   struct rtattr *rta;
@@ -555,6 +560,7 @@ tun_op_route(int op, int af, const void *addr, int prefix_len)
     return (-1);
   }
 
+  /* Get the data-link layer address of the tun device. */
   struct ifaddrs *ifap, *ifa;
   struct sockaddr_dl *sdlp = NULL;
   if (getifaddrs(&ifap)) {

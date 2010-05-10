@@ -216,6 +216,12 @@ mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
   return (0);
 }
 
+/*
+ * Install the host route entries for each IPv4 address defined in the
+ * mapping table, and install the IPv6 network route entry which is
+ * used to map those IPv4 addresses to pseudo IPv6 addresses used as
+ * endpoint addresses of the communication with the IPv6 only nodes.
+ */
 int
 mapping_install_route(void)
 {
@@ -237,6 +243,10 @@ mapping_install_route(void)
   return (0);
 }
 
+/*
+ * Delete all the route entries installed by the
+ * mapping_install_route() function.
+ */
 int
 mapping_uninstall_route(void)
 {

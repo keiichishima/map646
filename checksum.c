@@ -50,9 +50,7 @@ static int32_t cksum_acc_words(const uint16_t *, int);
 
 #define ADDCARRY(s) {while ((s) >> 16) {((s) = ((s) >> 16) + ((s) & 0xffff));}}
 
-/*
- * Calculate the checksum value of an IPv4 header.
- */
+/* Calculate the checksum value of an IPv4 header. */
 uint16_t
 cksum_calc_ip4_header(const struct ip *ip4_hdrp)
 {
@@ -76,9 +74,9 @@ cksum_calc_ip4_header(const struct ip *ip4_hdrp)
  * parameter contains the following information.
  *
  * iov[0]: Address family (uint32_t), or struct tun_pi{}
- * iov[1]: IP header
- * iov[2]: Fragment header (if necessary, otherwise NULL)
- * iov[3]: IP data
+ * iov[1]: IPv4/IPv6 header
+ * iov[2]: IPv6 Fragment header (if necessary, otherwise NULL)
+ * iov[3]: Upper layer protocol data
  */
 #if defined(__linux__)
 #define icmp_cksum checksum
@@ -117,7 +115,7 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
     sum = ~sum & 0xffff;
     sum += cksum_acc_ip_pheader(iov[1].iov_base);
     /*
-     * Similar to the ICMP case, we just add the new pseudo IPv6
+     * Similar to the ICMP case above, we just add the new pseudo IPv6
      * header sum to the checksum value, since the original ICMP
      * checksum doesn't include the IP pseudo header sum.
      */
@@ -172,12 +170,17 @@ cksum_update_icmp_type_code(void *icmp46_hdrp, int orig_type, int orig_code,
   int32_t sum = icmp6_hdrp->icmp6_cksum;
   sum = ~sum & 0xffff;
   uint8_t typecode[2];
+
+  /* Subtract the original type/code values from the checksum value. */
   typecode[0] = orig_type;
   typecode[1] = orig_code;
   sum -= cksum_acc_words((const uint16_t *)typecode, 2);
+
+  /* Add the new type/code values to the checksum value. */
   typecode[0] = new_type;
   typecode[1] = new_code;
   sum += cksum_acc_words((const uint16_t *)typecode, 2);
+
   ADDCARRY(sum);
   icmp6_hdrp->icmp6_cksum = ~sum & 0xffff;
 
@@ -213,6 +216,7 @@ cksum_acc_ip_pheader_wo_payload_len(const void *ip_phdrp)
       sum += *srcp++;
       sum += *dstp++;
     }
+#if 0
     /*
      * We don't add the length field of the pseudo header, assuming
      * that the value doesn't change before and after translation.
@@ -224,7 +228,6 @@ cksum_acc_ip_pheader_wo_payload_len(const void *ip_phdrp)
      * If you need a complete pseudo header sum, use the
      * cksum_acc_ip_pheader() function instead.
      */
-#if 0
     sum += htons((ntohs(ip4_hdrp->ip_len) - (ip4_hdrp->ip_hl << 2)));
 #endif
     sum += htons(ip4_hdrp->ip_p);
@@ -238,8 +241,8 @@ cksum_acc_ip_pheader_wo_payload_len(const void *ip_phdrp)
       sum += *srcp++;
       sum += *dstp++;
     }
-    /* Same as the IPv4 case. */
 #if 0
+    /* Same as the IPv4 case. */
     sum += ip6_hdrp->ip6_plen >> 16; /* for jumbo payload? */
     sum += ip6_hdrp->ip6_plen & 0xffff;
 #endif
@@ -284,7 +287,9 @@ cksum_acc_ip_pheader(const void *ip_phdrp)
 }
 
 /*
- * Calculate the sum of the series of 16 bits integer values.
+ * Calculate the sum of the series of 16 bits integer values.  If the
+ * length of the data is odd, the last byte will be shifted by 8 bits
+ * and calculated as a 16 bits value.
  */
 static int32_t
 cksum_acc_words(const uint16_t *data, int data_len)

@@ -125,14 +125,14 @@ main(int argc, char *argv[])
   }
   /*
    * The program reaches here only when read(2) fails in the above
-   * while loop.
+   * while loop.  This happens when a user type Ctrl-C too.
    */
   err(EXIT_FAILURE, "read from tun failed.");
 }
 
 /*
  * The clenaup routine called when SIGINT is received, typically when
- * the program is terminating.
+ * the program is terminated by a user.
  */
 void
 cleanup_sigint(int dummy)
@@ -142,7 +142,9 @@ cleanup_sigint(int dummy)
 
 /*
  * Close the tun interface file discripter.  In BSD systems, delete
- * the tun interface by calling tun_dealloc() function.
+ * the tun interface by calling tun_dealloc() function.  In Linux
+ * systems, the tun interface will automatically disappear when the
+ * owner process dies.
  */
 void
 cleanup(void)
@@ -199,17 +201,15 @@ send_4to6(void *buf)
   assert (buf != NULL);
 
   uint8_t *bufp = buf;
+
+  /* Analyze IPv4 header contents. */
   struct ip *ip4_hdrp;
   struct in_addr ip4_src, ip4_dst;
   uint16_t ip4_tlen, ip4_hlen, ip4_plen;
   uint8_t ip4_ttl, ip4_proto;
-
-  /* 
-   * Analyze IPv4 header contents.
-   */
   ip4_hdrp = (struct ip *)bufp;
-  /* IPv4 options are not supported. */
   if (ip4_hdrp->ip_hl << 2 != sizeof(struct ip)) {
+    /* IPv4 options are not supported. Just drop it. */
     warnx("IPv4 options are not supported.");
     return (0);
   }
@@ -223,22 +223,16 @@ send_4to6(void *buf)
   ip4_ttl = ip4_hdrp->ip_ttl;
   ip4_proto = ip4_hdrp->ip_p;
 
-  /*
-   * Fragment information check.
-   */
+  /* Fragment information check. */
   int ip4_id = ntohs(ip4_hdrp->ip_id);
   int ip4_off_flags = ntohs(ip4_hdrp->ip_off);
   int ip4_offset = ip4_off_flags & IP_OFFMASK;
   int ip4_more_frag = ip4_off_flags & IP_MF;
   int ip4_is_frag = 0;
-  if (ip4_offset != 0) {
-    /* This is one of the fragmented packets, except the first one. */
+  if (ip4_more_frag || ip4_offset != 0) {
+    /* This is one of the fragmented packets. */
     ip4_is_frag = 1;
   }
-
-  /*
-   * XXX: IPv4 options are not considered.
-   */
 
   bufp += ip4_hlen;
 
@@ -251,19 +245,15 @@ send_4to6(void *buf)
   fprintf(stderr, "protocol = %d\n", ip4_proto);
 #endif
 
-  /*
-   * Convert IP addresses.
-   */
+  /* Convert IP addresses. */
   struct in6_addr ip6_src, ip6_dst;
   if (mapping_convert_addrs_4to6(&ip4_src, &ip4_dst,
 				 &ip6_src, &ip6_dst) == -1) {
     warnx("no mapping available. packet is dropped.");
-    return (-1);
+    return (0);
   }
 
-  /*
-   * Prepare an IPv6 header.
-   */
+  /* Prepare an IPv6 header template. */
   struct ip6_hdr ip6_hdr;
   memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
   ip6_hdr.ip6_vfc = IPV6_VERSION;
@@ -297,20 +287,23 @@ send_4to6(void *buf)
     struct ip6_frag ip6_frag_hdr;
     memset(&ip6_frag_hdr, 0, sizeof(struct ip6_frag));
     if (ip4_id == 0) {
-      /* ip4_id may be 0 if the incoming packet is not a fragmented
-	 packet. */
+      /*
+       * ip4_id may be 0 if the incoming packet is not a fragmented
+       * packet.
+       */
       ip4_id = random();
     }
     ip6_frag_hdr.ip6f_ident = htonl(ip4_id);
 
-    int frag_count = (ntohs(ip6_hdr.ip6_plen) / frag_payload_unit) + 1;
-    int plen_left = ntohs(ip6_hdr.ip6_plen);
+    int frag_count = (ip4_plen / frag_payload_unit) + 1;
+    int plen_left = ip4_plen;
     int relative_offset = 0;
     while (frag_count--) {
       /*
-       * Set the original payload length here to calculate the
+       * Set the original payload length value here to calculate the
        * relative offset value and upper layer checksum value for
-       * ICMPv6 case.
+       * ICMPv6 case.  The next header field is also reset here for
+       * checksum calculation.
        *
        * The ICMPv6 fragmentation works in this case only (that means,
        * the incoming ICMP is not fragmented, but outgoing ICMPv6 is
@@ -325,8 +318,8 @@ send_4to6(void *buf)
       ip6_hdr.ip6_nxt = ip4_proto;
 
       /*
-       * The more fragment flag configuration and the fragment offset
-       * re-calculation.
+       * Decide the length of each fragment, and configure the more
+       * fragment flag.
        */
       ip6_frag_hdr.ip6f_offlg |= IP6F_MORE_FRAG;
       int frag_plen = 0;
@@ -343,11 +336,14 @@ send_4to6(void *buf)
 	  ip6_frag_hdr.ip6f_offlg &= ~IP6F_MORE_FRAG;
 	}
       }
+
+      /* The fragment offset re-calculation. */
       relative_offset = ntohs(ip6_hdr.ip6_plen) - plen_left;
-      plen_left -= frag_plen;
       ip6_frag_hdr.ip6f_offlg |= htons((ip4_offset << 3) + relative_offset);
 
-      /* Set the pieces of the information. */
+      plen_left -= frag_plen;
+
+      /* Arrange the pieces of the information. */
       struct iovec iov[4];
       uint32_t af;
       tun_set_af(&af, AF_INET6);
@@ -366,6 +362,7 @@ send_4to6(void *buf)
        * the upper layer protocol header.
        */
       if (ntohs(ip6_frag_hdr.ip6f_offlg & IP6F_OFF_MASK) == 0) {
+	/* The first fragmented packet case. */
 	if (ip4_proto == IPPROTO_ICMP) {
 	  /* Convert the ICMP type/code to those of ICMPv6. */
 	  if (convert_icmp(IPPROTO_ICMP, iov) == -1) {
@@ -374,10 +371,14 @@ send_4to6(void *buf)
 	  }
 	}
 	cksum_update_ulp(ip6_hdr.ip6_nxt, ip4_hdrp, iov);
-      }
-
-      /* ICMP to ICMPv6 special case handling. */
-      if (ip4_proto == IPPROTO_ICMP) {
+      } else if (ip4_proto == IPPROTO_ICMP) {
+	/* 
+	 * ICMP to ICMPv6 special case handling.  The next header
+	 * value of the first fragment of ICMPv6 is set to
+	 * IPPROTO_ICMPV6 in the convert_icmp() function, but the rest
+	 * of the fragment packets need to be set it properly here to
+	 * make the IPv6 header chain appropriate.
+	 */
 	ip6_hdr.ip6_nxt = IPPROTO_ICMPV6;
       }
 
@@ -428,10 +429,10 @@ send_4to6(void *buf)
       if (ip4_more_frag) {
 	ip6_frag_hdr.ip6f_offlg |= IP6F_MORE_FRAG;
       }
-      ip6_frag_hdr.ip6f_ident = htonl(ip4_id);
       ip6_frag_hdr.ip6f_offlg |= htons(ip4_offset << 3);
+      ip6_frag_hdr.ip6f_ident = htonl(ip4_id);
 
-      /* Set the pieces of the information. */
+      /* Arrange the pieces of the information. */
       tun_set_af(&af, AF_INET6);
       iov[0].iov_base = &af;
       iov[0].iov_len = sizeof(uint32_t);
@@ -444,7 +445,7 @@ send_4to6(void *buf)
     } else {
       /*
        * No fragment processing is needed.  Just create a simple IPv6
-       * header.
+       * packet.
        */
       tun_set_af(&af, AF_INET6);
       iov[0].iov_base = &af;
@@ -456,12 +457,17 @@ send_4to6(void *buf)
       iov[3].iov_base = bufp;
       iov[3].iov_len = ip4_plen;
     }
+
     /*
      * Re-calculate the checksum in ICMP (which is converted to ICMPv6
      * eventually), TCP, or UDP header, if a packet contains the upper
      * layer protocol header.
      */
     if (ip4_offset == 0) {
+      /*
+       * This is a single packet or the first fragment packet, which
+       * includes an upper layer protocol header.
+       */
       if (ip4_proto == IPPROTO_ICMP) {
 	/* Convert the ICMP type/code to those of ICMPv6. */
 	if (convert_icmp(IPPROTO_ICMP, iov) == -1) {
@@ -503,16 +509,10 @@ send_6to4(void *buf)
   assert(buf != NULL);
 
   char *bufp = buf;
-  struct ip6_hdr *ip6_hdrp;
-  struct in6_addr ip6_src, ip6_dst;
-  uint16_t ip6_payload_len;
-  uint8_t ip6_next_header, ip6_hop_limit;
-  struct ip ip4_hdr;
-  struct in_addr ip4_src, ip4_dst;
 
-  /* 
-   * Analyze IPv6 header contents.
-   */
+  /* Analyze IPv6 header contents. */
+  struct ip6_hdr *ip6_hdrp;
+  uint8_t ip6_next_header;
   ip6_hdrp = (struct ip6_hdr *)bufp;
   ip6_next_header = ip6_hdrp->ip6_nxt;
   bufp += sizeof(struct ip6_hdr);
@@ -543,6 +543,9 @@ send_6to4(void *buf)
   }
 
   /* Get some basic IPv6 header values. */
+  struct in6_addr ip6_src, ip6_dst;
+  uint16_t ip6_payload_len;
+  uint8_t ip6_hop_limit;
   memcpy((void *)&ip6_src, (const void *)&ip6_hdrp->ip6_src,
 	 sizeof(struct in6_addr));
   memcpy((void *)&ip6_dst, (const void *)&ip6_hdrp->ip6_dst,
@@ -564,18 +567,16 @@ send_6to4(void *buf)
   fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
 #endif
 
-  /*
-   * Convert IP addresses.
-   */
+  /* Convert IP addresses. */
+  struct in_addr ip4_src, ip4_dst;
   if (mapping_convert_addrs_6to4(&ip6_src, &ip6_dst,
 				 &ip4_src, &ip4_dst) == -1) {
     warnx("no mapping available. packet is dropped.");
     return (-1);
   }
 
-  /*
-   * Prepare an IPv4 header.
-   */
+  /* Prepare an IPv4 header. */
+  struct ip ip4_hdr;
   memset(&ip4_hdr, 0, sizeof(struct ip));
   ip4_hdr.ip_v = IPVERSION;
   ip4_hdr.ip_hl = sizeof(struct ip) >> 2;
@@ -583,8 +584,8 @@ send_6to4(void *buf)
   ip4_hdr.ip_id = htons(ip6_id & 0xffff);
   ip4_hdr.ip_ttl = ip6_hop_limit;
   ip4_hdr.ip_p = ip6_next_header;
-  ip4_hdr.ip_sum = 0; /* The header checksum is calculated before
-			 being sent. */
+  /* The header checksum is calculated before being sent. */
+  ip4_hdr.ip_sum = 0;
   memcpy((void *)&ip4_hdr.ip_src, (const void *)&ip4_src,
 	 sizeof(struct in_addr));
   memcpy((void *)&ip4_hdr.ip_dst, (const void *)&ip4_dst,
@@ -605,6 +606,10 @@ send_6to4(void *buf)
     /* Fragment is needed for this packet. */
     int frag_payload_unit = ((MTU - sizeof(struct ip)) >> 3) << 3;
     if (ip6_id == 0) {
+      /*
+       * ip6_id may be 0 if the incoming packet is not a fragmented
+       * packet.
+       */
       ip4_hdr.ip_id = random();
     }
 
@@ -612,6 +617,10 @@ send_6to4(void *buf)
     int plen_left = ip6_payload_len;
     int relative_offset = 0;
     while (frag_count--) {
+      /*
+       * Decide the length of each fragment, and configure the more
+       * fragment flag.
+       */
       ip4_hdr.ip_off |= htons(IP_MF);
       int frag_plen = 0;
       if (plen_left > frag_payload_unit) {
@@ -627,11 +636,14 @@ send_6to4(void *buf)
 	  ip4_hdr.ip_off &= htons(~IP_MF);
 	}
       }
+
+      /* The fragment offset re-calculation. */
       relative_offset = ip6_payload_len - plen_left;
-      plen_left -= frag_plen;
       ip4_hdr.ip_off |= htons((ip6_offset + relative_offset) >> 3);
 
-      /* Set the pieces of the information. */
+      plen_left -= frag_plen;
+
+      /* Arrange the pieces of the information. */
       struct iovec iov[4];
       uint32_t af = 0;
       tun_set_af(&af, AF_INET);
@@ -650,6 +662,7 @@ send_6to4(void *buf)
        * the upper layer protocol header.
        */
       if ((ntohs(ip4_hdr.ip_off) & IP_OFFMASK) == 0) {
+	/* This is the first fragmented packet. */
 	if (ip6_next_header == IPPROTO_ICMPV6) {
 	  /* Convert the ICMPv6 type/code to those of ICMP. */
 	  if (convert_icmp(IPPROTO_ICMPV6, iov) == -1) {
@@ -664,7 +677,7 @@ send_6to4(void *buf)
       ip4_hdr.ip_len = htons(frag_plen + sizeof(struct ip));
 
       /* Calculate the IPv4 header checksum. */
-      ip4_hdr.ip_sum = 0; /* need to clear, since we reuse IPv4 hdr. */
+      ip4_hdr.ip_sum = 0; /* need to clear, since we reuse ip4_hdr. */
       ip4_hdr.ip_sum = cksum_calc_ip4_header(&ip4_hdr);
 
       /* Send this fragment. */
@@ -699,11 +712,15 @@ send_6to4(void *buf)
       if (ip6_more_frag) {
 	ip4_hdr.ip_off = htons(IP_MF);
       }
-      ip4_hdr.ip_id = htons(ip6_id & 0xffff); /* XXX: we don't have
-						 enough size. */
       ip4_hdr.ip_off |= htons(ip6_offset >> 3);
+      /*
+       * XXX: we don't have a big enough field for the fragment
+       * identifier in IPv4 (16 bits in IPv4, 32 bits in IPv6).  Cut
+       * top 16 bits.
+       */
+      ip4_hdr.ip_id = htons(ip6_id & 0xffff);
 
-      /* Set the pieces of the information. */
+      /* Arrange the pieces of the information. */
       tun_set_af(&af, AF_INET);
       iov[0].iov_base = &af;
       iov[0].iov_len = sizeof(uint32_t);
@@ -716,7 +733,7 @@ send_6to4(void *buf)
     } else {
       /*
        * No fragment processing is needed.  Just create a simple IPv4
-       * header.
+       * packet.
        */
       tun_set_af(&af, AF_INET);
       iov[0].iov_base = &af;
@@ -735,6 +752,10 @@ send_6to4(void *buf)
      * the upper layer protocol header.
      */
     if ((ntohs(ip4_hdr.ip_off) & IP_OFFMASK) == 0) {
+      /*
+       * This is a single packet or the first fragment packet, which
+       * includes an upper layer protocol header.
+       */
       if (ip6_next_header == IPPROTO_ICMPV6) {
 	/* Convert the ICMPv6 type/code to those of ICMP. */
 	if (convert_icmp(IPPROTO_ICMPV6, iov) == -1) {
@@ -785,16 +806,27 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
     switch (icmp_hdrp->icmp_type) {
     case ICMP_ECHO:
       icmp_hdrp->icmp_type = ICMP6_ECHO_REQUEST;
-      cksum_update_icmp_type_code(icmp_hdrp,
-				  ICMP_ECHO, icmp_hdrp->icmp_code,
-				  ICMP6_ECHO_REQUEST, icmp_hdrp->icmp_code);
+      if (cksum_update_icmp_type_code(icmp_hdrp,
+				      ICMP_ECHO,
+				      icmp_hdrp->icmp_code,
+				      ICMP6_ECHO_REQUEST,
+				      icmp_hdrp->icmp_code) == -1) {
+	warnx("Checksum update when converting ICMP Echo to ICMPv6 Echo failed.");
+	return(-1);
+      }
       break;
 
     case ICMP_ECHOREPLY:
       icmp_hdrp->icmp_type = ICMP6_ECHO_REPLY;
-      cksum_update_icmp_type_code(icmp_hdrp,
-				  ICMP_ECHOREPLY, icmp_hdrp->icmp_code,
-				  ICMP6_ECHO_REPLY, icmp_hdrp->icmp_code);
+      if (cksum_update_icmp_type_code(icmp_hdrp,
+				      ICMP_ECHOREPLY,
+				      icmp_hdrp->icmp_code,
+				      ICMP6_ECHO_REPLY,
+				      icmp_hdrp->icmp_code) == -1) {
+	
+	warnx("Checksum update when converting ICMP Echo Reply to ICMPv6 Echo Reply failed.");
+	return (-1);
+      }
       break;
 
     default:
@@ -810,16 +842,26 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
     switch (icmp6_hdrp->icmp6_type) {
     case ICMP6_ECHO_REQUEST:
       icmp6_hdrp->icmp6_type = ICMP_ECHO;
-      cksum_update_icmp_type_code(icmp6_hdrp,
-				  ICMP6_ECHO_REQUEST, icmp6_hdrp->icmp6_code,
-				  ICMP_ECHO, icmp6_hdrp->icmp6_code);
+      if (cksum_update_icmp_type_code(icmp6_hdrp,
+				      ICMP6_ECHO_REQUEST,
+				      icmp6_hdrp->icmp6_code,
+				      ICMP_ECHO,
+				      icmp6_hdrp->icmp6_code) == -1) {
+	warnx("Checksum update when converting ICMPv6 Echo to ICMP Echo failed.");
+	return(-1);
+      }
       break;
 
     case ICMP6_ECHO_REPLY:
       icmp6_hdrp->icmp6_type = ICMP_ECHOREPLY;
-      cksum_update_icmp_type_code(icmp6_hdrp,
-				  ICMP6_ECHO_REPLY, icmp6_hdrp->icmp6_code,
-				  ICMP_ECHOREPLY, icmp6_hdrp->icmp6_code);
+      if (cksum_update_icmp_type_code(icmp6_hdrp,
+				      ICMP6_ECHO_REPLY,
+				      icmp6_hdrp->icmp6_code,
+				      ICMP_ECHOREPLY,
+				      icmp6_hdrp->icmp6_code) == -1) {
+      	warnx("Checksum update when converting ICMPv6 Echo Reply to ICMP Echo Reply failed.");
+	return(-1);
+      }
       break;
 
     default:
