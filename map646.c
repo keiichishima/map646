@@ -60,7 +60,7 @@
 static int send_4to6(void *);
 static int send_6to4(void *);
 static int convert_icmp(int, struct iovec *);
-static int icmp_input(const struct icmphdr *, int *);
+static int icmp_input(const struct icmp *, int *);
 void cleanup_sigint(int);
 void cleanup(void);
 void reload_sighup(int);
@@ -254,7 +254,7 @@ send_4to6(void *buf)
   /* ICMP error handling. */
   if (ip4_proto == IPPROTO_ICMP) {
     int can_drop = 0;
-    if (icmp_input((const struct icmphdr *)bufp, &can_drop) == -1) {
+    if (icmp_input((const struct icmp *)bufp, &can_drop) == -1) {
       return (0);
     }
     if (can_drop)
@@ -800,10 +800,6 @@ send_6to4(void *buf)
  * ICMP <=> ICMPv6 protocol conversion.  Currently, only the echo
  * request and echo reply messages are supported.
  */
-#if defined(__linux__)
-#define icmp_type type
-#define icmp_code code
-#endif
 static int
 convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 {
@@ -813,7 +809,7 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 
   struct ip *ip4_hdrp;
   struct ip6_hdr *ip6_hdrp;
-  struct icmphdr *icmp_hdrp;
+  struct icmp *icmp_hdrp;
   struct icmp6_hdr *icmp6_hdrp;
 
   switch (incoming_icmp_protocol) {
@@ -893,7 +889,7 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 }
 
 static int
-icmp_input(const struct icmphdr *icmp_hdrp, int *can_dropp)
+icmp_input(const struct icmp *icmp_hdrp, int *can_dropp)
 {
   assert(icmp_hdrp != NULL);
   assert(can_dropp != NULL);
@@ -915,7 +911,3 @@ icmp_input(const struct icmphdr *icmp_hdrp, int *can_dropp)
 
   return (0);
 }
-#if defined(__linux__)
-#undef icmp_type
-#undef icmp_code
-#endif

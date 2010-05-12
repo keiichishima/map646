@@ -79,7 +79,6 @@ cksum_calc_ip4_header(const struct ip *ip4_hdrp)
  * iov[3]: Upper layer protocol data
  */
 #if defined(__linux__)
-#define icmp_cksum checksum
 #define th_sum check
 #define uh_sum check
 #endif
@@ -91,7 +90,7 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
 
   struct tcphdr *tcp_hdrp;
   struct udphdr *udp_hdrp;
-  struct icmphdr *icmp_hdrp;
+  struct icmp *icmp_hdrp;
   struct icmp6_hdr *icmp6_hdrp;
   int32_t sum;
   switch (ulp) {
@@ -151,7 +150,6 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
   return (0);
 }
 #if defined(__linux__)
-#undef icmp_cksum
 #undef th_sum
 #undef uh_sum
 #endif
