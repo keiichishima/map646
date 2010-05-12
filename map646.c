@@ -618,9 +618,10 @@ send_6to4(void *buf)
    * below must be a variable achieved from the path MTU discovery
    * mechanism.
    */
-  if (ip6_payload_len > MTU - sizeof(struct ip)) {
+  int mtu = pmtudisc_get_path_mtu_size(AF_INET, &ip4_dst);
+  if (ip6_payload_len > mtu - sizeof(struct ip)) {
     /* Fragment is needed for this packet. */
-    int frag_payload_unit = ((MTU - sizeof(struct ip)) >> 3) << 3;
+    int frag_payload_unit = ((mtu - sizeof(struct ip)) >> 3) << 3;
     if (ip6_id == 0) {
       /*
        * ip6_id may be 0 if the incoming packet is not a fragmented

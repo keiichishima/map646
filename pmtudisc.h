@@ -27,5 +27,6 @@
 
 int pmtudisc_initialize(void);
 int pmtudisc_icmp_input(const struct icmp *);
+int pmtudisc_get_path_mtu_size(int, const void *);
 
 #endif

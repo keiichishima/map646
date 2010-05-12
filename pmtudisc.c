@@ -36,7 +36,7 @@
 
 struct path_mtu {
   SLIST_ENTRY(path_mtu) entries;
-  struct sockaddr_storage addr;
+  struct sockaddr_storage ss_addr;
   int path_mtu;
   time_t last_updated;
 };
@@ -45,14 +45,131 @@ struct path_mtu {
 #define PMTUDISC_DEFAULT_LIFETIME 3600
 
 static int pmtudisc_update_pmtu(int, const void *, int);
+static struct path_mtu *pmtudisc_find_pmtu(int, const void *);
 
 SLIST_HEAD(listhead, path_mtu) path_mtu_head
 			       = SLIST_HEAD_INITIALIZER(path_mtu_head);
+static int path_mtu_count;
 
 int
 pmtudisc_initialize(void)
 {
   SLIST_INIT(&path_mtu_head);
+  path_mtu_count = 0;
+
+  return (0);
+}
+
+int
+pmtudisc_get_path_mtu_size(int af, const void *addr)
+{
+  assert(addr != NULL);
+
+  int pmtu = PMTUDISC_DEFAULT_MTU;
+
+  struct path_mtu *pmtup = pmtudisc_find_pmtu(af, addr);
+
+  if (pmtup != NULL) {
+    pmtu = pmtup->path_mtu;
+    /* Check the lifetime of the entry. */
+    if (time(NULL) - pmtup->last_updated > PMTUDISC_DEFAULT_LIFETIME) {
+      /* Remove the entry. */
+      SLIST_REMOVE(&path_mtu_head, pmtup, path_mtu, entries);
+      path_mtu_count--;
+      free(pmtup);
+    } else {
+      /* Move the matched entry to the list head. */
+      SLIST_REMOVE(&path_mtu_head, pmtup, path_mtu, entries);
+      SLIST_INSERT_HEAD(&path_mtu_head, pmtup, entries);
+    }
+  }
+
+  return (pmtu);
+}
+
+int
+pmtudisc_icmp_input(const struct icmp *icmp_hdrp)
+{
+  assert(icmp_hdrp->icmp_type != ICMP_UNREACH);
+  assert(icmp_hdrp->icmp_code != ICMP_UNREACH_NEEDFRAG);
+
+  /* Get the final destination address of the original packet. */
+  const struct ip *ip_hdrp = (const struct ip *)(icmp_hdrp + 1);
+  struct in_addr addr;
+  memcpy(&addr, &ip_hdrp->ip_dst, sizeof(struct in_addr));
+
+  /* Copy the nexthop MTU size notified by the intermediate gateway. */
+  int pmtu = ntohs(icmp_hdrp->icmp_nextmtu);
+  if (pmtu < 0) {
+    /*
+     * Very old implementation may not support the Path MTU discovery
+     * mechanism.
+     */
+    warnx("The recieved MTU size (%d) is too small.", pmtu);
+    /*
+     * XXX: Every router must be able to forward a datagram of 68
+     * octets without fragmentation. (RFC791: Internet Protocol)
+     */
+    pmtu = 68;
+  }
+
+  if (pmtudisc_update_pmtu(AF_INET, &addr, pmtu) == -1) {
+    warnx("cannot update path mtu information.");
+    return (-1);
+  }
+  
+  return (0);
+}
+
+int
+pmtudisc_icmp6_input(const struct icmp6_hdr *icmp6_hdrp)
+{
+  return (0);
+}
+
+static int
+pmtudisc_update_pmtu(int af, const void *addr, int pmtu)
+{
+  assert(addr != NULL);
+  assert(pmtu >= 68);
+
+  time_t now = time(NULL);
+
+  struct path_mtu *pmtup = pmtudisc_find_pmtu(af, addr);
+  if (pmtup != NULL) {
+    /* Entry exists. */
+    if (pmtup->path_mtu != pmtu) {
+      pmtup->path_mtu = pmtu;
+      pmtup->last_updated = now;
+    }
+  } else {
+    /* No entry exists. Create a new one. */
+    pmtup = malloc(sizeof(struct path_mtu));
+    if (pmtup == NULL) {
+      warnx("cannot allocate memory for struct path_mtu{}.");
+      return (-1);
+    }
+    memset(pmtup, 0, sizeof(struct path_mtu));
+    pmtup->ss_addr.ss_family = af;
+    switch (af) {
+    case AF_INET:
+      memcpy(&((struct sockaddr_in *)&pmtup->ss_addr)->sin_addr, addr,
+	     sizeof(struct sockaddr_in));
+      break;
+    case  AF_INET6:
+      memcpy(&((struct sockaddr_in6 *)&pmtup->ss_addr)->sin6_addr, addr,
+	     sizeof(struct sockaddr_in6));
+      break;
+    default:
+      warnx("unsupported address family %d.", af);
+      free(pmtup);
+      return (-1);
+    }
+    pmtup->path_mtu = pmtu;
+    pmtup->last_updated = now;
+    SLIST_INSERT_HEAD(&path_mtu_head, pmtup, entries);
+    path_mtu_count++;
+  }
 
   return (0);
 }
@@ -66,11 +183,11 @@ pmtudisc_find_pmtu(int af, const void *addr)
   struct in_addr *addr4;
   struct in6_addr *addr6;
   SLIST_FOREACH(pmtup, &path_mtu_head, entries) {
-    if (pmtup->addr.ss_family != af)
+    if (pmtup->ss_addr.ss_family != af)
       continue;
     switch (af) {
     case AF_INET:
-      addr4 = &((struct sockaddr_in *)&pmtup->addr)->sin_addr;
+      addr4 = &((struct sockaddr_in *)&pmtup->ss_addr)->sin_addr;
       if (memcmp(addr, addr4, sizeof(struct in_addr)) == 0) {
 	/* Found. */
 	return (pmtup);
@@ -78,7 +195,7 @@ pmtudisc_find_pmtu(int af, const void *addr)
       break;
 
     case AF_INET6:
-      addr6 = &((struct sockaddr_in6 *)&pmtup->addr)->sin6_addr;
+      addr6 = &((struct sockaddr_in6 *)&pmtup->ss_addr)->sin6_addr;
       if (memcmp(addr, addr6, sizeof(struct in6_addr)) == 0) {
 	/* Found. */
 	return (pmtup);
@@ -93,93 +210,4 @@ pmtudisc_find_pmtu(int af, const void *addr)
 
   /* Not found. */
   return (NULL);
-}
-
-int
-pmtudisc_lookup_pmtu(int af, const void *addr)
-{
-  int pmtu = PMTUDISC_DEFAULT_MTU;
-
-  struct path_mtu *pmtup = pmtudisc_find_pmtu(af, addr);
-
-  if (pmtup != NULL) {
-    pmtu = pmtup->path_mtu;
-    /* Check the lifetime of the entry. */
-    if (time(NULL) - pmtup->last_updated > PMTUDISC_DEFAULT_LIFETIME) {
-      /* Remove the entry. */
-      SLIST_REMOVE(&path_mtu_head, pmtup, path_mtu, entries);
-      free(pmtup);
-    } else {
-      /* Move the matched entry to the list head. */
-      SLIST_REMOVE(&path_mtu_head, pmtup, path_mtu, entries);
-      SLIST_INSERT_HEAD(&path_mtu_head, pmtup, entries);
-    }
-  }
-
-  return (pmtu);
-}
-
-struct icmp_fragneed_hdr {
-  uint8_t type;
-  uint8_t code;
-  uint16_t checksum;
-  uint16_t unused;
-  uint16_t mtu;
-};
-int
-pmtudisc_icmp_input(const struct icmp *icmp_hdrp)
-{
-  const struct icmp_fragneed_hdr *icmp_fragneed_hdrp
-    = (const struct icmp_fragneed_hdr *)icmp_hdrp;
-  
-  assert(icmp_fragneed_hdrp->type != ICMP_UNREACH);
-  assert(icmp_fragneed_hdrp->code != ICMP_UNREACH_NEEDFRAG);
-
-  const struct ip *ip_hdrp = (const struct ip *)(icmp_fragneed_hdrp + 1);
-  struct in_addr addr;
-  memcpy(&addr, &ip_hdrp->ip_src, sizeof(struct in_addr));
-
-  int pmtu = icmp_fragneed_hdrp->mtu;
-  if (pmtu < 68) {
-    warnx("Too small MTU size (%d) update request is recieved.", pmtu);
-    return (-1);
-  }
-
-  pmtudisc_update_pmtu(AF_INET, &addr, pmtu);
-  
-  return (0);
-}
-
-int
-pmtudisc_icmp6_input(const struct icmp6_hdr *icmp6_hdrp)
-{
-  return (0);
-}
-
-static int
-pmtudisc_update_pmtu(int af, const void *addr, int pmtu)
-{
-  time_t now = time(NULL);
-
-  struct path_mtu *pmtup = pmtudisc_find_pmtu(af, addr);
-  if (pmtup != NULL) {
-    /* Entry exists. */
-    pmtup->path_mtu = pmtu;
-    pmtup->last_updated = now;
-  } else {
-    /* No entry exists. */
-    pmtup = malloc(sizeof(struct path_mtu));
-    memset(pmtup, 0, sizeof(struct path_mtu));
-    pmtup->addr.ss_family = af;
-    if (af == AF_INET) {
-      memcpy(&((struct sockaddr_in *)&pmtup->addr)->sin_addr, addr,
-	     sizeof(struct sockaddr_in));
-    } else if (af == AF_INET6) {
-      memcpy(&((struct sockaddr_in6 *)&pmtup->addr)->sin6_addr, addr,
-	     sizeof(struct sockaddr_in6));
-    }
-    pmtup->last_updated = now;
-  }
-
-  return (0);
 }
