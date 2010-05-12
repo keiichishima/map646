@@ -1,4 +1,4 @@
-OBJS	= map646.o mapping.o tunif.o checksum.o
+OBJS	= map646.o mapping.o tunif.o checksum.o pmtudisc.o
 
 CFLAGS	= -Wall -g -DDEBUG
 

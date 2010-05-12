@@ -48,6 +48,7 @@
 #include "mapping.h"
 #include "tunif.h"
 #include "checksum.h"
+#include "pmtudisc.h"
 
 #if defined(__linux__)
 #define IPV6_VERSION 0x60
@@ -59,6 +60,7 @@
 static int send_4to6(void *);
 static int send_6to4(void *);
 static int convert_icmp(int, struct iovec *);
+static int icmp_input(const struct icmphdr *, int *);
 void cleanup_sigint(int);
 void cleanup(void);
 void reload_sighup(int);
@@ -69,6 +71,10 @@ char *map646_conf_path = "/etc/map646.conf";
 int
 main(int argc, char *argv[])
 {
+  /* Initialization of supporting classes. */
+  pmtudisc_initialize();
+
+  /* Exit/Signal handers setup. */
   if (atexit(cleanup) == -1) {
     err(EXIT_FAILURE, "failed to register an exit hook.");
   }
@@ -244,6 +250,16 @@ send_4to6(void *buf)
   fprintf(stderr, "ttl = %d\n", ip4_ttl);
   fprintf(stderr, "protocol = %d\n", ip4_proto);
 #endif
+
+  /* ICMP error handling. */
+  if (ip4_proto == IPPROTO_ICMP) {
+    int can_drop = 0;
+    if (icmp_input((const struct icmphdr *)bufp, &can_drop) == -1) {
+      return (0);
+    }
+    if (can_drop)
+      return (0);
+  }
 
   /* Convert IP addresses. */
   struct in6_addr ip6_src, ip6_dst;
@@ -871,6 +887,30 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
     ip4_hdrp = iov[1].iov_base;
     ip4_hdrp->ip_p = IPPROTO_ICMP;
     break;
+  }
+
+  return (0);
+}
+
+static int
+icmp_input(const struct icmphdr *icmp_hdrp, int *can_dropp)
+{
+  assert(icmp_hdrp != NULL);
+  assert(can_dropp != NULL);
+
+  if (icmp_hdrp->icmp_type == ICMP_ECHO
+      || icmp_hdrp->icmp_type == ICMP_ECHOREPLY) {
+    /* These messages will be converted to ICMPv6 messages. */
+    return (0);
+  }
+
+  /* All other ICMP messages will be dropped. */
+  *can_dropp = 1;
+
+  if (icmp_hdrp->icmp_type == ICMP_UNREACH) {
+    if (icmp_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG) {
+      return (pmtudisc_icmp_input(icmp_hdrp));
+    }
   }
 
   return (0);
