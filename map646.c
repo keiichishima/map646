@@ -784,10 +784,6 @@ send_6to4(void *buf)
  * ICMP <=> ICMPv6 protocol conversion.  Currently, only the echo
  * request and echo reply messages are supported.
  */
-#if defined(__linux__)
-#define icmp_type type
-#define icmp_code code
-#endif
 static int
 convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 {
@@ -797,7 +793,7 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 
   struct ip *ip4_hdrp;
   struct ip6_hdr *ip6_hdrp;
-  struct icmphdr *icmp_hdrp;
+  struct icmp *icmp_hdrp;
   struct icmp6_hdr *icmp6_hdrp;
 
   switch (incoming_icmp_protocol) {
@@ -875,7 +871,3 @@ convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 
   return (0);
 }
-#if defined(__linux__)
-#undef icmp_type
-#undef icmp_code
-#endif
