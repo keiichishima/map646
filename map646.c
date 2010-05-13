@@ -69,6 +69,10 @@ char *map646_conf_path = "/etc/map646.conf";
 int
 main(int argc, char *argv[])
 {
+  if (mapping_initialize() == -1) {
+    errx(EXIT_FAILURE, "failed to initialize the mapping class.");
+  }
+
   if (atexit(cleanup) == -1) {
     err(EXIT_FAILURE, "failed to register an exit hook.");
   }

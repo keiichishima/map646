@@ -46,14 +46,21 @@
  * internal IPv6 address.
  */
 struct mapping {
-  SLIST_ENTRY(mapping) mappings;
+  SLIST_ENTRY(mapping) entries;
   struct in_addr addr4;
   struct in6_addr addr6;
 };
 
-SLIST_HEAD(mappinglisthead, mapping) mapping_list_head = SLIST_HEAD_INITIALIZER(mapping_list_head);
+SLIST_HEAD(listhead, mapping) mapping_head;
 static struct in6_addr mapping_prefix;
 
+int
+mapping_initialize(void)
+{
+  SLIST_INIT(&mapping_head);
+
+  return (0);
+}
 /*
  * Read the configuration file specified as the map646_conf_path
  * variable.  Each mapping entry is converted to the form of the
@@ -75,7 +82,7 @@ mapping_create_table(const char *map646_conf_path)
   }
 
   int line_count = 0;
-  SLIST_INIT(&mapping_list_head);
+  SLIST_INIT(&mapping_head);
   while (getline(&line, &line_cap, conf_fp) > 0) {
     line_count++;
     if (sscanf(line, "%255s %255s %255s", op, addr1, addr2) == -1) {
@@ -94,7 +101,7 @@ mapping_create_table(const char *map646_conf_path)
 	free(mappingp);
 	continue;
       }
-      SLIST_INSERT_HEAD(&mapping_list_head, mappingp, mappings);
+      SLIST_INSERT_HEAD(&mapping_head, mappingp, entries);
     } else if (strcmp(op, "mapping-prefix") == 0) {
       if (inet_pton(AF_INET6, addr1, &mapping_prefix) != 1) {
 	warn("line %d: invalid address %s.\n", line_count, addr1);
@@ -112,10 +119,10 @@ mapping_destroy_table(void)
 {
   memset(&mapping_prefix, 0, sizeof(struct in6_addr));
 
-  while (!SLIST_EMPTY(&mapping_list_head)) {
-    struct mapping *mp = SLIST_FIRST(&mapping_list_head);
+  while (!SLIST_EMPTY(&mapping_head)) {
+    struct mapping *mp = SLIST_FIRST(&mapping_head);
     free(mp);
-    SLIST_REMOVE_HEAD(&mapping_list_head, mappings);
+    SLIST_REMOVE_HEAD(&mapping_head, entries);
   }
 }
 
@@ -140,7 +147,7 @@ mapping_convert_addrs_4to6(const struct in_addr *ip4_src,
    * of the IPv4 destination address in the mapping table.
    */
   struct mapping *mappingp = NULL;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+  SLIST_FOREACH(mappingp, &mapping_head, entries) {
     if (memcmp((const void *)ip4_dst, (const void *)&mappingp->addr4,
 	       sizeof(struct in_addr)) == 0)
       /* found. */
@@ -197,7 +204,7 @@ mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
    * source address in the mapping table.
    */
   struct mapping *mappingp;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+  SLIST_FOREACH(mappingp, &mapping_head, entries) {
     if (memcmp((const void *)ip6_src, (const void *)&mappingp->addr6,
 	       sizeof(struct in6_addr)) == 0)
       /* found. */
@@ -226,7 +233,7 @@ int
 mapping_install_route(void)
 {
   struct mapping *mappingp;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+  SLIST_FOREACH(mappingp, &mapping_head, entries) {
     if (tun_add_route(AF_INET, &mappingp->addr4, 32) == -1) {
       warnx("IPv4 host %s route entry addition failed.",
             inet_ntoa(mappingp->addr4));
@@ -251,7 +258,7 @@ int
 mapping_uninstall_route(void)
 {
   struct mapping *mappingp;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+  SLIST_FOREACH(mappingp, &mapping_head, entries) {
     if (tun_delete_route(AF_INET, &mappingp->addr4, 32) == -1) {
       warnx("IPv4 host %s route entry deletion failed.",
             inet_ntoa(mappingp->addr4));
