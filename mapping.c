@@ -321,7 +321,7 @@ mapping_uninstall_route(void)
  * will be either IPv4 address or IPv6 address.
  *
  * The current index calculation algorithm is not very smart.  It just
- * sums all the data considering they are a seriese of 4 bytes of
+ * sums all the data considering they are a seriese of 2 bytes of
  * integers.  More improvement may be necessary.
  */
 static int
@@ -330,9 +330,9 @@ mapping_get_hash_index(const void *data, int data_len)
   assert(data != NULL);
   assert(data_len > 0);
 
-  uint32_t *datap = (uint32_t *)data;
-  data_len = data_len >> 2;
-  int sum;
+  uint16_t *datap = (uint16_t *)data;
+  data_len = data_len >> 1;
+  uint32_t sum = 0;
   while (data_len--) {
     sum += *datap++;
   }
