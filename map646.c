@@ -72,7 +72,12 @@ int
 main(int argc, char *argv[])
 {
   /* Initialization of supporting classes. */
-  pmtudisc_initialize();
+  if (mapping_initialize() == -1) {
+    errx(EXIT_FAILURE, "failed to initialize the mapping class.");
+  }
+  if (pmtudisc_initialize() == -1) {
+    errx(EXIT_FAILURE, "failed to initialize the path mtu discovery class.");
+  }
 
   /* Exit/Signal handers setup. */
   if (atexit(cleanup) == -1) {

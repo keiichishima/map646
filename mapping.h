@@ -27,6 +27,7 @@
 
 #include <sys/queue.h>
 
+int mapping_initialize(void);
 int mapping_create_table(const char *map646_conf_path);
 void mapping_destroy_table(void);
 int mapping_convert_addrs_4to6(const struct in_addr *,

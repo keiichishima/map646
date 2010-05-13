@@ -46,14 +46,48 @@
  * internal IPv6 address.
  */
 struct mapping {
-  SLIST_ENTRY(mapping) mappings;
+  SLIST_ENTRY(mapping) entries;
   struct in_addr addr4;
   struct in6_addr addr6;
 };
 
-SLIST_HEAD(mappinglisthead, mapping) mapping_list_head = SLIST_HEAD_INITIALIZER(mapping_list_head);
+struct mapping_hash {
+  SLIST_ENTRY(mapping_hash) entries;
+  struct mapping *mappingp;
+};
+
+#define MAPPING_TABLE_HASH_SIZE 1009
+
+SLIST_HEAD(mapping_listhead, mapping);
+struct mapping_listhead mapping_head;
+SLIST_HEAD(mapping_hash_listhead, mapping_hash);
+struct mapping_hash_listhead mapping_hash_4to6_heads[MAPPING_TABLE_HASH_SIZE];
+struct mapping_hash_listhead mapping_hash_6to4_heads[MAPPING_TABLE_HASH_SIZE];
 static struct in6_addr mapping_prefix;
 
+static int mapping_get_hash_index(const void *, int);
+static const struct mapping *mapping_find_mapping_with_ip4_addr(const struct
+								in_addr *);
+static const struct mapping *mapping_find_mapping_with_ip6_addr(const struct
+								in6_addr *);
+static int mapping_insert_mapping(struct mapping *);
+
+
+int
+mapping_initialize(void)
+{
+  memset(&mapping_prefix, 0, sizeof(struct in6_addr));
+
+  SLIST_INIT(&mapping_head);
+
+  int count = MAPPING_TABLE_HASH_SIZE;
+  while (count--) {
+    SLIST_INIT(&mapping_hash_4to6_heads[count]);
+    SLIST_INIT(&mapping_hash_6to4_heads[count]);
+  }
+
+  return (0);
+}
 /*
  * Read the configuration file specified as the map646_conf_path
  * variable.  Each mapping entry is converted to the form of the
@@ -62,6 +96,8 @@ static struct in6_addr mapping_prefix;
 int
 mapping_create_table(const char *map646_conf_path)
 {
+  assert(map646_conf_path != NULL);
+
   FILE *conf_fp;
   char *line;
   size_t line_cap = 0;
@@ -75,7 +111,6 @@ mapping_create_table(const char *map646_conf_path)
   }
 
   int line_count = 0;
-  SLIST_INIT(&mapping_list_head);
   while (getline(&line, &line_cap, conf_fp) > 0) {
     line_count++;
     if (sscanf(line, "%255s %255s %255s", op, addr1, addr2) == -1) {
@@ -94,7 +129,9 @@ mapping_create_table(const char *map646_conf_path)
 	free(mappingp);
 	continue;
       }
-      SLIST_INSERT_HEAD(&mapping_list_head, mappingp, mappings);
+      if (mapping_insert_mapping(mappingp) == -1) {
+	err(EXIT_FAILURE, "inserting a mapping entry failed.");
+      }
     } else if (strcmp(op, "mapping-prefix") == 0) {
       if (inet_pton(AF_INET6, addr1, &mapping_prefix) != 1) {
 	warn("line %d: invalid address %s.\n", line_count, addr1);
@@ -107,15 +144,36 @@ mapping_create_table(const char *map646_conf_path)
   return (0);
 }
 
+/* Destroy the mapping table. */
 void
 mapping_destroy_table(void)
 {
+  /* Clear the IPv6 pseudo prefix information. */
   memset(&mapping_prefix, 0, sizeof(struct in6_addr));
 
-  while (!SLIST_EMPTY(&mapping_list_head)) {
-    struct mapping *mp = SLIST_FIRST(&mapping_list_head);
+  /* Clear all the hash entries for the mapping{} structure instances. */
+  int count = MAPPING_TABLE_HASH_SIZE;
+  while (count--) {
+    /* Clear the hash entries for searching by IPv4 address as a key. */
+    while (!SLIST_EMPTY(&mapping_hash_4to6_heads[count])) {
+      struct mapping_hash *mhp = SLIST_FIRST(&mapping_hash_4to6_heads[count]);
+      SLIST_REMOVE_HEAD(&mapping_hash_4to6_heads[count], entries);
+      free(mhp);
+    }
+
+    /* Clear the hash entries for searching by IPv6 address as a key. */
+    while (!SLIST_EMPTY(&mapping_hash_6to4_heads[count])) {
+      struct mapping_hash *mhp = SLIST_FIRST(&mapping_hash_6to4_heads[count]);
+      SLIST_REMOVE_HEAD(&mapping_hash_6to4_heads[count], entries);
+      free(mhp);
+    }
+  }
+
+  /* Clear the actual mapping data list entries. */
+  while (!SLIST_EMPTY(&mapping_head)) {
+    struct mapping *mp = SLIST_FIRST(&mapping_head);
+    SLIST_REMOVE_HEAD(&mapping_head, entries);
     free(mp);
-    SLIST_REMOVE_HEAD(&mapping_list_head, mappings);
   }
 }
 
@@ -139,17 +197,11 @@ mapping_convert_addrs_4to6(const struct in_addr *ip4_src,
    * The converted IPv6 destination address is the associated address
    * of the IPv4 destination address in the mapping table.
    */
-  struct mapping *mappingp = NULL;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
-    if (memcmp((const void *)ip4_dst, (const void *)&mappingp->addr4,
-	       sizeof(struct in_addr)) == 0)
-      /* found. */
-      break;
-  }
+  const struct mapping *mappingp
+    = mapping_find_mapping_with_ip4_addr(ip4_dst);
   if (mappingp == NULL) {
     /* not found. */
-    warnx("no IPv6 pseudo endpoint address is found for the IPv4 pseudo endpoint address %s.",
-	  inet_ntoa(*ip4_dst));
+    warnx("no mapping entry found for %s.", inet_ntoa(*ip4_dst));
     return (-1);
   }
   memcpy((void *)ip6_dst, (const void *)&mappingp->addr6,
@@ -196,18 +248,13 @@ mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
    * IPv4 psuedo source address is the associated address of the IPv6
    * source address in the mapping table.
    */
-  struct mapping *mappingp;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
-    if (memcmp((const void *)ip6_src, (const void *)&mappingp->addr6,
-	       sizeof(struct in6_addr)) == 0)
-      /* found. */
-      break;
-  }
+  const struct mapping *mappingp
+    = mapping_find_mapping_with_ip6_addr(ip6_src);
   if (mappingp == NULL) {
     /* not found. */
-    char addr_name[64];
-    warnx("no IPv4 pseudo endpoint address is found for the IPv6 pseudo endpoint address %s.",
-	  inet_ntop(AF_INET6, ip6_src, addr_name, 64));
+    char addr_str[64];
+    warnx("no mapping entry found for %s.",
+	  inet_ntop(AF_INET6, ip6_src, addr_str, 64));
     return (-1);
   }
   memcpy((void *)ip4_src, (const void *)&mappingp->addr4,
@@ -226,7 +273,7 @@ int
 mapping_install_route(void)
 {
   struct mapping *mappingp;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+  SLIST_FOREACH(mappingp, &mapping_head, entries) {
     if (tun_add_route(AF_INET, &mappingp->addr4, 32) == -1) {
       warnx("IPv4 host %s route entry addition failed.",
             inet_ntoa(mappingp->addr4));
@@ -251,7 +298,7 @@ int
 mapping_uninstall_route(void)
 {
   struct mapping *mappingp;
-  SLIST_FOREACH(mappingp, &mapping_list_head, mappings) {
+  SLIST_FOREACH(mappingp, &mapping_head, entries) {
     if (tun_delete_route(AF_INET, &mappingp->addr4, 32) == -1) {
       warnx("IPv4 host %s route entry deletion failed.",
             inet_ntoa(mappingp->addr4));
@@ -259,11 +306,143 @@ mapping_uninstall_route(void)
   }
 
   if (tun_delete_route(AF_INET6, &mapping_prefix, 64) == -1) {
-    char addr_name[64];
+    char addr_str[64];
     warnx("IPv6 pseudo mapping prefix %s route entry deletion failed.",
-	  inet_ntop(AF_INET6, &mapping_prefix, addr_name, 64));
+	  inet_ntop(AF_INET6, &mapping_prefix, addr_str, 64));
     return (-1);
   }
+
+  return (0);
+}
+
+
+/*
+ * Calculate the hash index from the data given.  Currently, the data
+ * will be either IPv4 address or IPv6 address.
+ *
+ * The current index calculation algorithm is not very smart.  It just
+ * sums all the data considering they are a seriese of 4 bytes of
+ * integers.  More improvement may be necessary.
+ */
+static int
+mapping_get_hash_index(const void *data, int data_len)
+{
+  assert(data != NULL);
+  assert(data_len > 0);
+
+  uint32_t *datap = (uint32_t *)data;
+  data_len = data_len >> 2;
+  int sum;
+  while (data_len--) {
+    sum += *datap++;
+  }
+
+  return (sum % MAPPING_TABLE_HASH_SIZE);
+}
+
+/*
+ * Find the instance of the mapping{} structure which has the
+ * specified IPv4 address in its mapping information.
+ */
+static const struct mapping *
+mapping_find_mapping_with_ip4_addr(const struct in_addr *addrp)
+{
+  assert(addrp != NULL);
+
+  int hash_index = mapping_get_hash_index(addrp, sizeof(struct in_addr));
+
+  struct mapping_hash *mapping_hashp = NULL;
+  struct mapping *mappingp = NULL;
+  SLIST_FOREACH(mapping_hashp, &mapping_hash_4to6_heads[hash_index], entries) {
+    mappingp = mapping_hashp->mappingp;
+    if (memcmp((const void *)addrp, (const void *)&mappingp->addr4,
+	       sizeof(struct in_addr)) == 0)
+      /* found. */
+      break;
+  }
+
+  return (mappingp);
+}
+
+/*
+ * Find the instance of the mapping{} structure which has the
+ * specified IPv6 address in its mapping information.
+ */
+static const struct mapping *
+mapping_find_mapping_with_ip6_addr(const struct in6_addr *addrp)
+{
+  assert(addrp != NULL);
+
+  int hash_index = mapping_get_hash_index(addrp, sizeof(struct in6_addr));
+
+  struct mapping_hash *mapping_hashp = NULL;
+  struct mapping *mappingp = NULL;
+  SLIST_FOREACH(mapping_hashp, &mapping_hash_6to4_heads[hash_index], entries) {
+    mappingp = mapping_hashp->mappingp;
+    if (memcmp((const void *)addrp, (const void *)&mappingp->addr6,
+	       sizeof(struct in6_addr)) == 0)
+      /* found. */
+      break;
+  }
+
+  return (mappingp);
+}
+
+/*
+ * Insert a new instance of the mapping{} structure to the list, and
+ * at the same time insert the index information to the two hash
+ * tables, one is for searching with IPv4 address, the other is for
+ * searching with IPv6 address.
+ */
+static int
+mapping_insert_mapping(struct mapping *new_mappingp)
+{
+  assert(new_mappingp != NULL);
+
+  /*
+   * Insert the new hash entry to the hash table for IPv4 address
+   * based search.
+   */
+  if (mapping_find_mapping_with_ip4_addr(&new_mappingp->addr4) == NULL) {
+    int hash_index;
+    hash_index = mapping_get_hash_index(&new_mappingp->addr4,
+					sizeof(struct in_addr));
+    struct mapping_hash *mapping_hashp;
+    mapping_hashp = malloc(sizeof(struct mapping_hash));
+    if (mapping_hashp == NULL) {
+      warnx("memory allocation failed for struct mapping_hash{}.");
+      return (-1);
+    }
+    memset(mapping_hashp, 0, sizeof(struct mapping_hash));
+    mapping_hashp->mappingp = new_mappingp;
+    SLIST_INSERT_HEAD(&mapping_hash_4to6_heads[hash_index], mapping_hashp,
+		      entries);
+  }
+
+  /*
+   * Insert the new hash entry to the hash table for IPv6 address
+   * based search.
+   */
+  if (mapping_find_mapping_with_ip6_addr(&new_mappingp->addr6) == NULL) {
+    int hash_index;
+    hash_index = mapping_get_hash_index(&new_mappingp->addr6,
+					sizeof(struct in6_addr));
+    struct mapping_hash *mapping_hashp;
+    mapping_hashp = malloc(sizeof(struct mapping_hash));
+    if (mapping_hashp == NULL) {
+      warnx("memory allocation failed for struct mapping_hash{}.");
+      /* XXX: we should remove the hash entry inserted in the above
+	 block before returning from this function with an error. */
+      return (-1);
+    }
+    memset(mapping_hashp, 0, sizeof(struct mapping_hash));
+    mapping_hashp->mappingp = new_mappingp;
+    SLIST_INSERT_HEAD(&mapping_hash_6to4_heads[hash_index], mapping_hashp,
+		      entries);
+  }
+
+  /* Insert the new mapping{} instance to the global list. */
+  SLIST_INSERT_HEAD(&mapping_head, new_mappingp, entries);
 
   return (0);
 }
