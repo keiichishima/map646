@@ -53,7 +53,7 @@ LIST_HEAD(path_mtu_hash_listhead, path_mtu_hash);
 #define PMTUDISC_DEFAULT_LIFETIME 3600
 #define PMTUDISC_HASH_SIZE 1009
 #define PMTUDISC_IPV4_MINMTU 68
-#define PMTUDISC_PATH_MTU_EXPIRE_THRESHOLD_SIZE 10000
+#define PMTUDISC_PATH_MTU_MAX_INSTANCE_SIZE 10000
 
 static struct path_mtu_listhead path_mtu_head;
 static struct path_mtu_hash_listhead path_mtu_hash_heads[PMTUDISC_HASH_SIZE];
@@ -65,7 +65,7 @@ static int pmtudisc_insert_path_mtu(struct path_mtu *);
 static void pmtudisc_expire_path_mtus(void);
 static void pmtudisc_remove_path_mtu(struct path_mtu *);
 
-static int path_mtu_count;
+static int path_mtu_instance_size;
 
 int
 pmtudisc_initialize(void)
@@ -77,7 +77,7 @@ pmtudisc_initialize(void)
     LIST_INIT(&path_mtu_hash_heads[count]);
   }
 
-  path_mtu_count = 0;
+  path_mtu_instance_size = 0;
 
   return (0);
 }
@@ -254,12 +254,13 @@ pmtudisc_find_path_mtu(int af, const void *addrp)
       assert(0);
     }
     if (memcmp((const void *)addrp, (const void *)path_mtu_dstp,
-	       addr_len) == 0)
-      /* found. */
-      break;
+	       addr_len) == 0) {
+      /* Found. */
+      return (path_mtup);
+    }
   }
 
-  return (path_mtup);
+  return (NULL);
 }
 
 static int
@@ -304,9 +305,9 @@ pmtudisc_insert_path_mtu(struct path_mtu *new_path_mtup)
   /* Insert the new path_mtu{} instance to the global list. */
   LIST_INSERT_HEAD(&path_mtu_head, new_path_mtup, entries);
 
-  path_mtu_count++;
+  path_mtu_instance_size++;
 
-  if (path_mtu_count > PMTUDISC_PATH_MTU_EXPIRE_THRESHOLD_SIZE) {
+  if (path_mtu_instance_size > PMTUDISC_PATH_MTU_MAX_INSTANCE_SIZE) {
     pmtudisc_expire_path_mtus();
   }
 
@@ -317,11 +318,16 @@ static void
 pmtudisc_expire_path_mtus(void)
 {
   time_t now = time(NULL);
+  int reduced_size = PMTUDISC_PATH_MTU_MAX_INSTANCE_SIZE >> 1;
   struct path_mtu *pmtup;
   LIST_FOREACH(pmtup, &path_mtu_head, entries) {
-    if (now - pmtup->last_updated < PMTUDISC_DEFAULT_LIFETIME) {
-      /* Entry is still valid. */
-      continue;
+    if ((now - pmtup->last_updated > PMTUDISC_DEFAULT_LIFETIME)
+	|| (reduced_size-- < 0)) {
+      /*
+       * The path_mtu{} instance is outdated or the number of the
+       * path_mtu{} instances exceeds the limit.
+       */
+      break;
     }
   }
 
@@ -346,5 +352,5 @@ pmtudisc_remove_path_mtu(struct path_mtu *path_mtup)
   LIST_REMOVE(path_mtup, entries);
   free(path_mtup);
 
-  path_mtu_count--;
+  path_mtu_instance_size--;
 }
