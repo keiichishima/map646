@@ -35,23 +35,25 @@
 #include <netinet/icmp6.h>
 
 struct path_mtu {
-  SLIST_ENTRY(path_mtu) entries;
+  LIST_ENTRY(path_mtu) entries;
   struct sockaddr_storage ss_addr;
   int path_mtu;
   time_t last_updated;
+  struct path_mtu_hash *path_mtu_hashp;
 };
-SLIST_HEAD(path_mtu_listhead, path_mtu);
+LIST_HEAD(path_mtu_listhead, path_mtu);
 
 struct path_mtu_hash {
-  SLIST_ENTRY(path_mtu_hash) entries;
+  LIST_ENTRY(path_mtu_hash) entries;
   struct path_mtu *path_mtup;
 };
-SLIST_HEAD(path_mtu_hash_listhead, path_mtu_hash);
+LIST_HEAD(path_mtu_hash_listhead, path_mtu_hash);
 
 #define PMTUDISC_DEFAULT_MTU 1500
 #define PMTUDISC_DEFAULT_LIFETIME 3600
 #define PMTUDISC_HASH_SIZE 1009
 #define PMTUDISC_IPV4_MINMTU 68
+#define PMTUDISC_PATH_MTU_EXPIRE_THRESHOLD_SIZE 10000
 
 static struct path_mtu_listhead path_mtu_head;
 static struct path_mtu_hash_listhead path_mtu_hash_heads[PMTUDISC_HASH_SIZE];
@@ -60,16 +62,22 @@ static int pmtudisc_update_pmtu(int, const void *, int);
 static int pmtudisc_get_hash_index(const void *, int);
 static struct path_mtu *pmtudisc_find_path_mtu(int, const void *addrp);
 static int pmtudisc_insert_path_mtu(struct path_mtu *);
+static void pmtudisc_expire_path_mtus(void);
+static void pmtudisc_remove_path_mtu(struct path_mtu *);
+
+static int path_mtu_count;
 
 int
 pmtudisc_initialize(void)
 {
-  SLIST_INIT(&path_mtu_head);
+  LIST_INIT(&path_mtu_head);
 
   int count = PMTUDISC_HASH_SIZE;
   while (count--) {
-    SLIST_INIT(&path_mtu_hash_heads[count]);
+    LIST_INIT(&path_mtu_hash_heads[count]);
   }
+
+  path_mtu_count = 0;
 
   return (0);
 }
@@ -146,6 +154,9 @@ pmtudisc_update_pmtu(int af, const void *addrp, int pmtu)
     if (pmtup->path_mtu != pmtu) {
       pmtup->path_mtu = pmtu;
       pmtup->last_updated = now;
+      /* Reorder the global list so that the recent entry comes to head. */
+      LIST_REMOVE(pmtup, entries);
+      LIST_INSERT_HEAD(&path_mtu_head, pmtup, entries);
     }
   } else {
     /* No entry exists. Create a new path_mtu{} instance. */
@@ -172,6 +183,7 @@ pmtudisc_update_pmtu(int af, const void *addrp, int pmtu)
     }
     pmtup->path_mtu = pmtu;
     pmtup->last_updated = now;
+    pmtup->path_mtu_hashp = NULL;
     if (pmtudisc_insert_path_mtu(pmtup) == -1) {
       warnx("insersion of path_mtu{} structure to the management list fialed.");
       free(pmtup);
@@ -222,7 +234,7 @@ pmtudisc_find_path_mtu(int af, const void *addrp)
 
   struct path_mtu_hash *path_mtu_hashp = NULL;
   struct path_mtu *path_mtup = NULL;
-  SLIST_FOREACH(path_mtu_hashp, &path_mtu_hash_heads[hash_index], entries) {
+  LIST_FOREACH(path_mtu_hashp, &path_mtu_hash_heads[hash_index], entries) {
     path_mtup = path_mtu_hashp->path_mtup;
     if (af != path_mtup->ss_addr.ss_family) {
       /* Address family mismatch. */
@@ -285,11 +297,54 @@ pmtudisc_insert_path_mtu(struct path_mtu *new_path_mtup)
   }
   memset(path_mtu_hashp, 0, sizeof(struct path_mtu_hash));
   path_mtu_hashp->path_mtup = new_path_mtup;
-  SLIST_INSERT_HEAD(&path_mtu_hash_heads[hash_index], path_mtu_hashp,
+  new_path_mtup->path_mtu_hashp = path_mtu_hashp; /* Reverse pointer. */
+  LIST_INSERT_HEAD(&path_mtu_hash_heads[hash_index], path_mtu_hashp,
 		    entries);
 
   /* Insert the new path_mtu{} instance to the global list. */
-  SLIST_INSERT_HEAD(&path_mtu_head, new_path_mtup, entries);
+  LIST_INSERT_HEAD(&path_mtu_head, new_path_mtup, entries);
+
+  path_mtu_count++;
+
+  if (path_mtu_count > PMTUDISC_PATH_MTU_EXPIRE_THRESHOLD_SIZE) {
+    pmtudisc_expire_path_mtus();
+  }
 
   return (0);
+}
+
+static void
+pmtudisc_expire_path_mtus(void)
+{
+  time_t now = time(NULL);
+  struct path_mtu *pmtup;
+  LIST_FOREACH(pmtup, &path_mtu_head, entries) {
+    if (now - pmtup->last_updated < PMTUDISC_DEFAULT_LIFETIME) {
+      /* Entry is still valid. */
+      continue;
+    }
+  }
+
+  struct path_mtu *temp_pmtup;
+  for (;
+       pmtup && (temp_pmtup = LIST_NEXT(pmtup, entries), 1);
+       pmtup = temp_pmtup) {
+    pmtudisc_remove_path_mtu(pmtup);
+  }
+}
+
+static void
+pmtudisc_remove_path_mtu(struct path_mtu *path_mtup)
+{
+  assert(path_mtup != NULL);
+  assert(path_mtup->path_mtu_hashp != NULL);
+
+  struct path_mtu_hash *path_mtu_hashp = path_mtup->path_mtu_hashp;
+  LIST_REMOVE(path_mtu_hashp, entries);
+  free(path_mtu_hashp);
+
+  LIST_REMOVE(path_mtup, entries);
+  free(path_mtup);
+
+  path_mtu_count--;
 }
