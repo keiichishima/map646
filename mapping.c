@@ -357,11 +357,11 @@ mapping_find_mapping_with_ip4_addr(const struct in_addr *addrp)
     mappingp = mapping_hashp->mappingp;
     if (memcmp((const void *)addrp, (const void *)&mappingp->addr4,
 	       sizeof(struct in_addr)) == 0)
-      /* found. */
-      break;
+      /* Found. */
+      return (mappingp);
   }
 
-  return (mappingp);
+  return (NULL);
 }
 
 /*
@@ -381,11 +381,11 @@ mapping_find_mapping_with_ip6_addr(const struct in6_addr *addrp)
     mappingp = mapping_hashp->mappingp;
     if (memcmp((const void *)addrp, (const void *)&mappingp->addr6,
 	       sizeof(struct in6_addr)) == 0)
-      /* found. */
-      break;
+      /* Found. */
+      return (mappingp);
   }
 
-  return (mappingp);
+  return (NULL);
 }
 
 /*
