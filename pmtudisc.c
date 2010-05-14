@@ -40,22 +40,36 @@ struct path_mtu {
   int path_mtu;
   time_t last_updated;
 };
+SLIST_HEAD(path_mtu_listhead, path_mtu);
+
+struct path_mtu_hash {
+  SLIST_ENTRY(path_mtu_hash) entries;
+  struct path_mtu *path_mtup;
+};
+SLIST_HEAD(path_mtu_hash_listhead, path_mtu_hash);
 
 #define PMTUDISC_DEFAULT_MTU 1500
 #define PMTUDISC_DEFAULT_LIFETIME 3600
+#define PMTUDISC_HASH_SIZE 1009
+#define PMTUDISC_IPV4_MINMTU 68
+
+static struct path_mtu_listhead path_mtu_head;
+static struct path_mtu_hash_listhead path_mtu_hash_heads[PMTUDISC_HASH_SIZE];
 
 static int pmtudisc_update_pmtu(int, const void *, int);
-static struct path_mtu *pmtudisc_find_pmtu(int, const void *);
-
-SLIST_HEAD(listhead, path_mtu) path_mtu_head
-			       = SLIST_HEAD_INITIALIZER(path_mtu_head);
-static int path_mtu_count;
+static int pmtudisc_get_hash_index(const void *, int);
+static struct path_mtu *pmtudisc_find_path_mtu(int, const void *addrp);
+static int pmtudisc_insert_path_mtu(struct path_mtu *);
 
 int
 pmtudisc_initialize(void)
 {
   SLIST_INIT(&path_mtu_head);
-  path_mtu_count = 0;
+
+  int count = PMTUDISC_HASH_SIZE;
+  while (count--) {
+    SLIST_INIT(&path_mtu_hash_heads[count]);
+  }
 
   return (0);
 }
@@ -67,21 +81,9 @@ pmtudisc_get_path_mtu_size(int af, const void *addr)
 
   int pmtu = PMTUDISC_DEFAULT_MTU;
 
-  struct path_mtu *pmtup = pmtudisc_find_pmtu(af, addr);
-
+  struct path_mtu *pmtup = pmtudisc_find_path_mtu(af, addr);
   if (pmtup != NULL) {
     pmtu = pmtup->path_mtu;
-    /* Check the lifetime of the entry. */
-    if (time(NULL) - pmtup->last_updated > PMTUDISC_DEFAULT_LIFETIME) {
-      /* Remove the entry. */
-      SLIST_REMOVE(&path_mtu_head, pmtup, path_mtu, entries);
-      path_mtu_count--;
-      free(pmtup);
-    } else {
-      /* Move the matched entry to the list head. */
-      SLIST_REMOVE(&path_mtu_head, pmtup, path_mtu, entries);
-      SLIST_INSERT_HEAD(&path_mtu_head, pmtup, entries);
-    }
   }
 
   return (pmtu);
@@ -100,7 +102,7 @@ pmtudisc_icmp_input(const struct icmp *icmp_hdrp)
 
   /* Copy the nexthop MTU size notified by the intermediate gateway. */
   int pmtu = ntohs(icmp_hdrp->icmp_nextmtu);
-  if (pmtu < 0) {
+  if (pmtu < PMTUDISC_IPV4_MINMTU) {
     /*
      * Very old implementation may not support the Path MTU discovery
      * mechanism.
@@ -110,7 +112,7 @@ pmtudisc_icmp_input(const struct icmp *icmp_hdrp)
      * XXX: Every router must be able to forward a datagram of 68
      * octets without fragmentation. (RFC791: Internet Protocol)
      */
-    pmtu = 68;
+    pmtu = PMTUDISC_IPV4_MINMTU;
   }
 
   if (pmtudisc_update_pmtu(AF_INET, &addr, pmtu) == -1) {
@@ -128,22 +130,25 @@ pmtudisc_icmp6_input(const struct icmp6_hdr *icmp6_hdrp)
 }
 
 static int
-pmtudisc_update_pmtu(int af, const void *addr, int pmtu)
+pmtudisc_update_pmtu(int af, const void *addrp, int pmtu)
 {
-  assert(addr != NULL);
+  assert(addrp != NULL);
   assert(pmtu >= 68);
 
   time_t now = time(NULL);
 
-  struct path_mtu *pmtup = pmtudisc_find_pmtu(af, addr);
+  struct path_mtu *pmtup = pmtudisc_find_path_mtu(af, addrp);
   if (pmtup != NULL) {
-    /* Entry exists. */
+    /*
+     * The path_mtu{} instance exists.  Update the MTU information if
+     * it is different from the existing one.
+     */
     if (pmtup->path_mtu != pmtu) {
       pmtup->path_mtu = pmtu;
       pmtup->last_updated = now;
     }
   } else {
-    /* No entry exists. Create a new one. */
+    /* No entry exists. Create a new path_mtu{} instance. */
     pmtup = malloc(sizeof(struct path_mtu));
     if (pmtup == NULL) {
       warnx("cannot allocate memory for struct path_mtu{}.");
@@ -153,11 +158,11 @@ pmtudisc_update_pmtu(int af, const void *addr, int pmtu)
     pmtup->ss_addr.ss_family = af;
     switch (af) {
     case AF_INET:
-      memcpy(&((struct sockaddr_in *)&pmtup->ss_addr)->sin_addr, addr,
+      memcpy(&((struct sockaddr_in *)&pmtup->ss_addr)->sin_addr, addrp,
 	     sizeof(struct sockaddr_in));
       break;
     case  AF_INET6:
-      memcpy(&((struct sockaddr_in6 *)&pmtup->ss_addr)->sin6_addr, addr,
+      memcpy(&((struct sockaddr_in6 *)&pmtup->ss_addr)->sin6_addr, addrp,
 	     sizeof(struct sockaddr_in6));
       break;
     default:
@@ -167,47 +172,124 @@ pmtudisc_update_pmtu(int af, const void *addr, int pmtu)
     }
     pmtup->path_mtu = pmtu;
     pmtup->last_updated = now;
-    SLIST_INSERT_HEAD(&path_mtu_head, pmtup, entries);
-    path_mtu_count++;
+    if (pmtudisc_insert_path_mtu(pmtup) == -1) {
+      warnx("insersion of path_mtu{} structure to the management list fialed.");
+      free(pmtup);
+      return (-1);
+    }
   }
 
   return (0);
 }
 
-static struct path_mtu *
-pmtudisc_find_pmtu(int af, const void *addr)
+static int
+pmtudisc_get_hash_index(const void *data, int data_len)
 {
-  assert(addr != NULL);
+  assert(data != NULL);
+  assert(data_len > 0);
 
-  struct path_mtu *pmtup = NULL;
-  struct in_addr *addr4;
-  struct in6_addr *addr6;
-  SLIST_FOREACH(pmtup, &path_mtu_head, entries) {
-    if (pmtup->ss_addr.ss_family != af)
-      continue;
-    switch (af) {
-    case AF_INET:
-      addr4 = &((struct sockaddr_in *)&pmtup->ss_addr)->sin_addr;
-      if (memcmp(addr, addr4, sizeof(struct in_addr)) == 0) {
-	/* Found. */
-	return (pmtup);
-      }
-      break;
-
-    case AF_INET6:
-      addr6 = &((struct sockaddr_in6 *)&pmtup->ss_addr)->sin6_addr;
-      if (memcmp(addr, addr6, sizeof(struct in6_addr)) == 0) {
-	/* Found. */
-	return (pmtup);
-      }
-      break;
-
-    default:
-      warnx("unsupported address family %d.", af);
-      return (NULL);
-    }
+  uint16_t *datap = (uint16_t *)data;
+  data_len = data_len >> 1;
+  uint32_t sum = 0;
+  while (data_len--) {
+    sum += *datap++;
   }
 
-  /* Not found. */
-  return (NULL);
+  return (sum % PMTUDISC_HASH_SIZE);
+}
+
+static struct path_mtu *
+pmtudisc_find_path_mtu(int af, const void *addrp)
+{
+  assert(addrp != NULL);
+
+  int addr_len = 0;
+  switch (af) {
+  case AF_INET:
+    addr_len = sizeof(struct in_addr);
+    break;
+
+  case AF_INET6:
+    addr_len = sizeof(struct in6_addr);
+    break;
+
+  default:
+    warnx("unsupported address family %d.", af);
+    return (NULL);
+  }
+
+  int hash_index = pmtudisc_get_hash_index(addrp, addr_len);
+
+  struct path_mtu_hash *path_mtu_hashp = NULL;
+  struct path_mtu *path_mtup = NULL;
+  SLIST_FOREACH(path_mtu_hashp, &path_mtu_hash_heads[hash_index], entries) {
+    path_mtup = path_mtu_hashp->path_mtup;
+    if (af != path_mtup->ss_addr.ss_family) {
+      /* Address family mismatch. */
+      continue;
+    }
+    void *path_mtu_dstp = NULL;
+    switch (path_mtup->ss_addr.ss_family) {
+    case AF_INET:
+      path_mtu_dstp
+	= &(((struct sockaddr_in *)&path_mtup->ss_addr)->sin_addr);
+      break;
+    case AF_INET6:
+      path_mtu_dstp
+	= &(((struct sockaddr_in6 *)&path_mtup->ss_addr)->sin6_addr);
+      break;
+    default:
+      assert(0);
+    }
+    if (memcmp((const void *)addrp, (const void *)path_mtu_dstp,
+	       addr_len) == 0)
+      /* found. */
+      break;
+  }
+
+  return (path_mtup);
+}
+
+static int
+pmtudisc_insert_path_mtu(struct path_mtu *new_path_mtup)
+{
+  assert(new_path_mtup != NULL);
+
+  /*
+   * Insert the new hash entry to the hash table for the path MTU
+   * destination IP address.
+   */
+  int new_af = new_path_mtup->ss_addr.ss_family;
+  void *new_dstp;
+  int new_dst_len;
+  switch (new_af) {
+  case AF_INET:
+    new_dstp = &(((struct sockaddr_in *)&new_path_mtup->ss_addr)->sin_addr);
+    new_dst_len = sizeof(struct in_addr);
+    break;
+  case AF_INET6:
+    new_dstp = &(((struct sockaddr_in6 *)&new_path_mtup->ss_addr)->sin6_addr);
+    new_dst_len = sizeof(struct in6_addr);
+    break;
+  default:
+    warnx("unsupported address family %d.", new_af);
+    return (-1);
+  }
+
+  int hash_index = pmtudisc_get_hash_index(new_dstp, new_dst_len); 
+  struct path_mtu_hash *path_mtu_hashp;
+  path_mtu_hashp = malloc(sizeof(struct path_mtu_hash));
+  if (path_mtu_hashp == NULL) {
+    warnx("memory allocation failed for struct path_mtu_hash{}.");
+    return (-1);
+  }
+  memset(path_mtu_hashp, 0, sizeof(struct path_mtu_hash));
+  path_mtu_hashp->path_mtup = new_path_mtup;
+  SLIST_INSERT_HEAD(&path_mtu_hash_heads[hash_index], path_mtu_hashp,
+		    entries);
+
+  /* Insert the new path_mtu{} instance to the global list. */
+  SLIST_INSERT_HEAD(&path_mtu_head, new_path_mtup, entries);
+
+  return (0);
 }

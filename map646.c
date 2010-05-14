@@ -55,7 +55,6 @@
 #endif
 
 #define BUF_LEN 1600
-#define MTU 1500 /* XXX: it depends on the path MTU to the dest node. */
 
 static int send_4to6(void *);
 static int send_6to4(void *);
@@ -301,10 +300,11 @@ send_4to6(void *buf)
    * below must be a variable achieved from the path MTU discovery
    * mechanism.
    */
+  int mtu = pmtudisc_get_path_mtu_size(AF_INET6, &ip6_dst);
 #define IP6_FRAG6_HDR_LEN (sizeof(struct ip6_hdr) + sizeof(struct ip6_frag))
-  if (ip4_plen > MTU - IP6_FRAG6_HDR_LEN) {
+  if (ip4_plen > mtu - IP6_FRAG6_HDR_LEN) {
     /* Fragment is needed for this packet. */
-    int frag_payload_unit = ((MTU - IP6_FRAG6_HDR_LEN) >> 3) << 3;
+    int frag_payload_unit = ((mtu - IP6_FRAG6_HDR_LEN) >> 3) << 3;
     struct ip6_frag ip6_frag_hdr;
     memset(&ip6_frag_hdr, 0, sizeof(struct ip6_frag));
     if (ip4_id == 0) {
