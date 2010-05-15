@@ -31,10 +31,8 @@
 #include <unistd.h>
 
 #include <sys/uio.h>
-#if !defined(__linux__)
 #include <sys/types.h>
 #include <sys/socket.h>
-#endif
 
 #include <net/if.h>
 
