@@ -33,6 +33,7 @@
 #include <assert.h>
 #include <err.h>
 
+#include <sys/queue.h>
 #include <sys/socket.h>
 
 #include <arpa/inet.h>

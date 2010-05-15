@@ -25,8 +25,6 @@
 #ifndef __MAPPING_H__
 #define __MAPPING_H__
 
-#include <sys/queue.h>
-
 int mapping_initialize(void);
 int mapping_create_table(const char *map646_conf_path);
 void mapping_destroy_table(void);
