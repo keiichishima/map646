@@ -90,11 +90,17 @@ pmtudisc_get_path_mtu_size(int af, const void *addr)
 {
   assert(addr != NULL);
 
+  time_t now = time(NULL);
   int pmtu = PMTUDISC_DEFAULT_MTU;
 
   struct path_mtu *pmtup = pmtudisc_find_path_mtu(af, addr);
   if (pmtup != NULL) {
-    pmtu = pmtup->path_mtu;
+    if (now - pmtup->last_updated > PMTUDISC_DEFAULT_LIFETIME) {
+      /* Entry is expired. */
+      pmtudisc_remove_path_mtu(pmtup);
+    } else {
+      pmtu = pmtup->path_mtu;
+    }
   }
 
   return (pmtu);
