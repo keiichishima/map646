@@ -103,8 +103,8 @@ pmtudisc_get_path_mtu_size(int af, const void *addr)
 int
 pmtudisc_icmp_input(const struct icmp *icmp_hdrp)
 {
-  assert(icmp_hdrp->icmp_type != ICMP_UNREACH);
-  assert(icmp_hdrp->icmp_code != ICMP_UNREACH_NEEDFRAG);
+  assert(icmp_hdrp->icmp_type == ICMP_UNREACH);
+  assert(icmp_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG);
 
   /* Get the final destination address of the original packet. */
   const struct ip *ip_hdrp = (const struct ip *)(icmp_hdrp + 1);
