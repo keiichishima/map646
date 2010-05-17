@@ -292,12 +292,7 @@ send_4to6(void *buf)
   fprintf(stderr, "plen = %d\n", ntohs(ip6_hdr.ip6_plen));
 #endif
 
-  /*
-   * XXX: Fragment processing.  Note that the value of the MTU depends
-   * on the path MTU value to the destination node.  The macro MTU
-   * below must be a variable achieved from the path MTU discovery
-   * mechanism.
-   */
+  /* Fragment processing. */
   int mtu = pmtudisc_get_path_mtu_size(AF_INET6, &ip6_dst);
 #define IP6_FRAG6_HDR_LEN (sizeof(struct ip6_hdr) + sizeof(struct ip6_frag))
   if (ip4_plen > mtu - IP6_FRAG6_HDR_LEN) {
@@ -601,6 +596,7 @@ send_6to4(void *buf)
   ip4_hdr.ip_hl = sizeof(struct ip) >> 2;
   ip4_hdr.ip_len = htons(sizeof(struct ip) + ip6_payload_len);
   ip4_hdr.ip_id = htons(ip6_id & 0xffff);
+  ip4_hdr.ip_off = htons(IP_DF);
   ip4_hdr.ip_ttl = ip6_hop_limit;
   ip4_hdr.ip_p = ip6_next_header;
   /* The header checksum is calculated before being sent. */
@@ -615,12 +611,7 @@ send_6to4(void *buf)
   fprintf(stderr, "to dst = %s\n", inet_ntoa(ip4_dst));
 #endif
 
-  /*
-   * XXX: Fragment processing.  Note that the value of the MTU depends
-   * on the path MTU value to the destination node.  The macro MTU
-   * below must be a variable achieved from the path MTU discovery
-   * mechanism.
-   */
+  /* Fragment processing. */
   int mtu = pmtudisc_get_path_mtu_size(AF_INET, &ip4_dst);
   if (ip6_payload_len > mtu - sizeof(struct ip)) {
     /* Fragment is needed for this packet. */
