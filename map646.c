@@ -47,6 +47,7 @@
 #include "tunif.h"
 #include "checksum.h"
 #include "pmtudisc.h"
+#include "icmpsub.h"
 
 #if defined(__linux__)
 #define IPV6_VERSION 0x60
@@ -54,10 +55,9 @@
 
 #define BUF_LEN 1600
 
-static int send_4to6(void *);
-static int send_6to4(void *);
-static int convert_icmp(int, struct iovec *);
-static int icmp_input(const struct icmp *, int *);
+static int send_4to6(void *, size_t);
+static int send_6to4(void *, size_t);
+
 void cleanup_sigint(int);
 void cleanup(void);
 void reload_sighup(int);
@@ -122,10 +122,10 @@ main(int argc, char *argv[])
 #endif
     switch (af) {
     case AF_INET:
-      send_4to6(bufp);
+      send_4to6(bufp, (size_t)read_len);
       break;
     case AF_INET6:
-      send_6to4(bufp);
+      send_6to4(bufp, (size_t)read_len);
       break;
     default:
       warnx("unsupported address family %d is received.", af);
@@ -204,18 +204,18 @@ reload_sighup(int dummy)
  * send it.
  */
 static int
-send_4to6(void *buf)
+send_4to6(void *datap, size_t data_len)
 {
-  assert (buf != NULL);
+  assert (datap != NULL);
 
-  uint8_t *bufp = buf;
+  uint8_t *packetp = datap;
 
   /* Analyze IPv4 header contents. */
   struct ip *ip4_hdrp;
   struct in_addr ip4_src, ip4_dst;
   uint16_t ip4_tlen, ip4_hlen, ip4_plen;
   uint8_t ip4_ttl, ip4_proto;
-  ip4_hdrp = (struct ip *)bufp;
+  ip4_hdrp = (struct ip *)packetp;
   if (ip4_hdrp->ip_hl << 2 != sizeof(struct ip)) {
     /* IPv4 options are not supported. Just drop it. */
     warnx("IPv4 options are not supported.");
@@ -242,7 +242,7 @@ send_4to6(void *buf)
     ip4_is_frag = 1;
   }
 
-  bufp += ip4_hlen;
+  packetp += ip4_hlen;
 
 #ifdef DEBUG
   fprintf(stderr, "src = %s\n", inet_ntoa(ip4_src));
@@ -255,11 +255,16 @@ send_4to6(void *buf)
 
   /* ICMP error handling. */
   if (ip4_proto == IPPROTO_ICMP) {
-    int can_drop = 0;
-    if (icmp_input((const struct icmp *)bufp, &can_drop) == -1) {
+    /* XXX: need to check the minimum size of the incoming ICMP before
+       further processing. */
+    int discard_ok = 0;
+    if (icmpsub_process_icmp4((const struct icmp *)packetp,
+			      data_len - ((void *)packetp - datap),
+			      &discard_ok)
+	== -1) {
       return (0);
     }
-    if (can_drop)
+    if (discard_ok)
       return (0);
   }
 
@@ -297,6 +302,19 @@ send_4to6(void *buf)
 #define IP6_FRAG6_HDR_LEN (sizeof(struct ip6_hdr) + sizeof(struct ip6_frag))
   if (ip4_plen > mtu - IP6_FRAG6_HDR_LEN) {
     /* Fragment is needed for this packet. */
+
+    /*
+     * Send an ICMP error message with the unreach type and the
+     * need_fragment code.  ICMP error message generation will be rate
+     * limited.
+     */
+    if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, datap, &ip4_src,
+					    mtu - IP6_FRAG6_HDR_LEN)
+	== -1) {
+      warnx("sending ICMP unreach w/ needfrag failed.");
+      /* Continue processing anyway. */
+    }
+
     int frag_payload_unit = ((mtu - IP6_FRAG6_HDR_LEN) >> 3) << 3;
     struct ip6_frag ip6_frag_hdr;
     memset(&ip6_frag_hdr, 0, sizeof(struct ip6_frag));
@@ -367,7 +385,7 @@ send_4to6(void *buf)
       iov[1].iov_len = sizeof(struct ip6_hdr);
       iov[2].iov_base = &ip6_frag_hdr;
       iov[2].iov_len = sizeof(struct ip6_frag);
-      iov[3].iov_base = bufp + relative_offset;
+      iov[3].iov_base = packetp + relative_offset;
       iov[3].iov_len = frag_plen;
 
       /*
@@ -379,7 +397,7 @@ send_4to6(void *buf)
 	/* The first fragmented packet case. */
 	if (ip4_proto == IPPROTO_ICMP) {
 	  /* Convert the ICMP type/code to those of ICMPv6. */
-	  if (convert_icmp(IPPROTO_ICMP, iov) == -1) {
+	  if (icmpsub_convert_icmp(IPPROTO_ICMP, iov) == -1) {
 	    /* ICMP to ICMPv6 conversion failed. */
 	    return (0);
 	  }
@@ -454,7 +472,7 @@ send_4to6(void *buf)
       iov[1].iov_len = sizeof(struct ip6_hdr);
       iov[2].iov_base = &ip6_frag_hdr;
       iov[2].iov_len = sizeof(struct ip6_frag);
-      iov[3].iov_base = bufp;
+      iov[3].iov_base = packetp;
       iov[3].iov_len = ip4_plen;
     } else {
       /*
@@ -468,7 +486,7 @@ send_4to6(void *buf)
       iov[1].iov_len = sizeof(struct ip6_hdr);
       iov[2].iov_base = NULL;
       iov[2].iov_len = 0;
-      iov[3].iov_base = bufp;
+      iov[3].iov_base = packetp;
       iov[3].iov_len = ip4_plen;
     }
 
@@ -484,7 +502,7 @@ send_4to6(void *buf)
        */
       if (ip4_proto == IPPROTO_ICMP) {
 	/* Convert the ICMP type/code to those of ICMPv6. */
-	if (convert_icmp(IPPROTO_ICMP, iov) == -1) {
+	if (icmpsub_convert_icmp(IPPROTO_ICMP, iov) == -1) {
 	  /* ICMP to ICMPv6 conversion failed. */
 	  return (0);
 	}
@@ -518,18 +536,18 @@ send_4to6(void *buf)
  * send it.
  */
 static int
-send_6to4(void *buf)
+send_6to4(void *datap, size_t data_len)
 {
-  assert(buf != NULL);
+  assert(datap != NULL);
 
-  char *bufp = buf;
+  char *packetp = datap;
 
   /* Analyze IPv6 header contents. */
   struct ip6_hdr *ip6_hdrp;
   uint8_t ip6_next_header;
-  ip6_hdrp = (struct ip6_hdr *)bufp;
+  ip6_hdrp = (struct ip6_hdr *)packetp;
   ip6_next_header = ip6_hdrp->ip6_nxt;
-  bufp += sizeof(struct ip6_hdr);
+  packetp += sizeof(struct ip6_hdr);
 
   /* Fragment header check. */
   struct ip6_frag *ip6_frag_hdrp = NULL;
@@ -537,12 +555,12 @@ send_6to4(void *buf)
   int ip6_offset = 0;
   int ip6_id = 0;
   if (ip6_next_header == IPPROTO_FRAGMENT) {
-    ip6_frag_hdrp = (struct ip6_frag *)bufp;
+    ip6_frag_hdrp = (struct ip6_frag *)packetp;
     ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
     ip6_more_frag = ip6_frag_hdrp->ip6f_offlg & IP6F_MORE_FRAG;
     ip6_offset = ntohs(ip6_frag_hdrp->ip6f_offlg & IP6F_OFF_MASK);
     ip6_id = ntohl(ip6_frag_hdrp->ip6f_ident);
-    bufp += sizeof(struct ip6_frag);
+    packetp += sizeof(struct ip6_frag);
   }
 
   /*
@@ -664,7 +682,7 @@ send_6to4(void *buf)
       iov[1].iov_len = sizeof(struct ip);
       iov[2].iov_base = NULL;
       iov[2].iov_len = 0;
-      iov[3].iov_base = bufp + relative_offset;
+      iov[3].iov_base = packetp + relative_offset;
       iov[3].iov_len = frag_plen;
 
       /*
@@ -676,7 +694,7 @@ send_6to4(void *buf)
 	/* This is the first fragmented packet. */
 	if (ip6_next_header == IPPROTO_ICMPV6) {
 	  /* Convert the ICMPv6 type/code to those of ICMP. */
-	  if (convert_icmp(IPPROTO_ICMPV6, iov) == -1) {
+	  if (icmpsub_convert_icmp(IPPROTO_ICMPV6, iov) == -1) {
 	    /* ICMPv6 to ICMP conversion failed. */
 	    return (0);
 	  }
@@ -739,7 +757,7 @@ send_6to4(void *buf)
       iov[1].iov_len = sizeof(struct ip);
       iov[2].iov_base = NULL;
       iov[2].iov_len = 0;
-      iov[3].iov_base = bufp;
+      iov[3].iov_base = packetp;
       iov[3].iov_len = ip6_payload_len;
     } else {
       /*
@@ -753,7 +771,7 @@ send_6to4(void *buf)
       iov[1].iov_len = sizeof(struct ip);
       iov[2].iov_base = NULL;
       iov[2].iov_len = 0;
-      iov[3].iov_base = bufp;
+      iov[3].iov_base = packetp;
       iov[3].iov_len = ip6_payload_len;
     }
 
@@ -769,7 +787,7 @@ send_6to4(void *buf)
        */
       if (ip6_next_header == IPPROTO_ICMPV6) {
 	/* Convert the ICMPv6 type/code to those of ICMP. */
-	if (convert_icmp(IPPROTO_ICMPV6, iov) == -1) {
+	if (icmpsub_convert_icmp(IPPROTO_ICMPV6, iov) == -1) {
 	  /* ICMPv6 to ICMP conversion failed. */
 	  return (0);
 	}
@@ -785,122 +803,6 @@ send_6to4(void *buf)
     write_len = writev(tun_fd, iov, 4);
     if (write_len == -1) {
       warn("sending an IPv4 packet failed.");
-    }
-  }
-
-  return (0);
-}
-
-/*
- * ICMP <=> ICMPv6 protocol conversion.  Currently, only the echo
- * request and echo reply messages are supported.
- */
-static int
-convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
-{
-  assert(iov != NULL);
-  assert(incoming_icmp_protocol == IPPROTO_ICMP
-	 || incoming_icmp_protocol == IPPROTO_ICMPV6);
-
-  struct ip *ip4_hdrp;
-  struct ip6_hdr *ip6_hdrp;
-  struct icmp *icmp_hdrp;
-  struct icmp6_hdr *icmp6_hdrp;
-
-  switch (incoming_icmp_protocol) {
-  case IPPROTO_ICMP:
-    icmp_hdrp = iov[3].iov_base;
-    switch (icmp_hdrp->icmp_type) {
-    case ICMP_ECHO:
-      icmp_hdrp->icmp_type = ICMP6_ECHO_REQUEST;
-      if (cksum_update_icmp_type_code(icmp_hdrp,
-				      ICMP_ECHO,
-				      icmp_hdrp->icmp_code,
-				      ICMP6_ECHO_REQUEST,
-				      icmp_hdrp->icmp_code) == -1) {
-	warnx("Checksum update when converting ICMP Echo to ICMPv6 Echo failed.");
-	return(-1);
-      }
-      break;
-
-    case ICMP_ECHOREPLY:
-      icmp_hdrp->icmp_type = ICMP6_ECHO_REPLY;
-      if (cksum_update_icmp_type_code(icmp_hdrp,
-				      ICMP_ECHOREPLY,
-				      icmp_hdrp->icmp_code,
-				      ICMP6_ECHO_REPLY,
-				      icmp_hdrp->icmp_code) == -1) {
-	
-	warnx("Checksum update when converting ICMP Echo Reply to ICMPv6 Echo Reply failed.");
-	return (-1);
-      }
-      break;
-
-    default:
-      warnx("unsupported ICMP type %d.", icmp_hdrp->icmp_type);
-      return (-1);
-    }
-    ip6_hdrp = iov[1].iov_base;
-    ip6_hdrp->ip6_nxt = IPPROTO_ICMPV6;
-    break;
-
-  case IPPROTO_ICMPV6:
-    icmp6_hdrp = iov[3].iov_base;
-    switch (icmp6_hdrp->icmp6_type) {
-    case ICMP6_ECHO_REQUEST:
-      icmp6_hdrp->icmp6_type = ICMP_ECHO;
-      if (cksum_update_icmp_type_code(icmp6_hdrp,
-				      ICMP6_ECHO_REQUEST,
-				      icmp6_hdrp->icmp6_code,
-				      ICMP_ECHO,
-				      icmp6_hdrp->icmp6_code) == -1) {
-	warnx("Checksum update when converting ICMPv6 Echo to ICMP Echo failed.");
-	return(-1);
-      }
-      break;
-
-    case ICMP6_ECHO_REPLY:
-      icmp6_hdrp->icmp6_type = ICMP_ECHOREPLY;
-      if (cksum_update_icmp_type_code(icmp6_hdrp,
-				      ICMP6_ECHO_REPLY,
-				      icmp6_hdrp->icmp6_code,
-				      ICMP_ECHOREPLY,
-				      icmp6_hdrp->icmp6_code) == -1) {
-      	warnx("Checksum update when converting ICMPv6 Echo Reply to ICMP Echo Reply failed.");
-	return(-1);
-      }
-      break;
-
-    default:
-      warnx("unsupported ICMPv6 type %d.", icmp6_hdrp->icmp6_type);
-      return (-1);
-    }
-    ip4_hdrp = iov[1].iov_base;
-    ip4_hdrp->ip_p = IPPROTO_ICMP;
-    break;
-  }
-
-  return (0);
-}
-
-static int
-icmp_input(const struct icmp *icmp_hdrp, int *can_dropp)
-{
-  assert(icmp_hdrp != NULL);
-  assert(can_dropp != NULL);
-
-  if (icmp_hdrp->icmp_type == ICMP_ECHO
-      || icmp_hdrp->icmp_type == ICMP_ECHOREPLY) {
-    /* These messages will be converted to ICMPv6 messages. */
-    return (0);
-  }
-
-  /* All other ICMP messages will be dropped. */
-  *can_dropp = 1;
-
-  if (icmp_hdrp->icmp_type == ICMP_UNREACH) {
-    if (icmp_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG) {
-      return (pmtudisc_icmp_input(icmp_hdrp));
     }
   }
 

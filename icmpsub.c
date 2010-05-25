@@ -53,6 +53,124 @@ static int icmpsub_select_source_address(int, const void *, void *);
 static int icmpsub_check_sending_rate(void);
 
 /*
+ * Process the incoming ICMPv4 message.  The discard_ok variable is
+ * set to 1 when the incoming ICMP messages are not necessarily
+ * converted to ICMPv6.
+ */
+int
+icmpsub_process_icmp4(const struct icmp *icmp4_hdrp, int icmp4_size,
+		      int *discard_okp)
+{
+  assert(icmp4_hdrp != NULL);
+  assert(discard_okp != NULL);
+
+  *discard_okp = 0;
+
+  if (icmp4_size < ICMP_MINLEN) {
+    warnx("ICMP message must be longer than %d (%d received).", ICMP_MINLEN,
+	  icmp4_size);
+    *discard_okp = 1;
+    return (-1);
+  }
+
+  if (icmp4_hdrp->icmp_type == ICMP_ECHO
+      || icmp4_hdrp->icmp_type == ICMP_ECHOREPLY) {
+    /* These messages will be converted to ICMPv6 messages. */
+    return (0);
+  }
+
+  /* All other ICMP messages will be discarded. */
+  *discard_okp = 1;
+
+  /* Process further ICMP message contents based on the type/code. */
+  if (icmp4_hdrp->icmp_type == ICMP_UNREACH) {
+    if (icmp4_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG) {
+      /* Path MTU discovery procedure. */
+      if (icmp4_size < ICMP_MINLEN + sizeof(struct ip)) {
+	/*
+	 * The original IPv4 header is necessary to extract the
+	 * destination address of the original packet.
+	 */
+	warnx("ICMP_UNREACH_NEEDFRAG message must be longer than %ld "
+	      "(%d received).", ICMP_MINLEN + sizeof(struct ip), icmp4_size);
+	return (-1);
+      }
+
+      struct in_addr remote_addr;
+      int mtu;
+      if (icmpsub_extract_icmp4_unreach_needfrag(icmp4_hdrp, &remote_addr,
+						 &mtu) == -1) {
+	warnx("cannot extract MTU information from the ICMP packet.");
+	return (-1);
+      }
+      if (pmtudisc_update_path_mtu_size(AF_INET, &remote_addr, mtu) == -1) {
+	warnx("cannot update path mtu information.");
+	return (-1);
+      }
+    }
+  }
+
+  return (0);
+}
+
+/*
+ * Send an ICMPv4 packet with the unreach type and the needfrag code
+ * to the node specidied by the remote_addrp parameter.  The source
+ * address will be determined properly.
+ */
+int
+icmpsub_send_icmp4_unreach_needfrag(int tun_fd, void *in_pktp,
+				    const struct in_addr *remote_addrp,
+				    int mtu)
+{
+  assert(in_pktp != NULL);
+  assert(remote_addrp != NULL);
+
+  /* Check if we can send this ICMPv4 packet or not. */
+  if (icmpsub_check_sending_rate()) {
+    warnx("ICMP rate limit over.");
+    return (0);
+  }
+
+
+  /* Prepare IPv4 and ICMPv6 headers and fill most of their fields. */
+  struct ip ip4_hdr;
+  struct icmp icmp4_hdr;
+  if (icmpsub_create_icmp4_unreach_needfrag(&ip4_hdr, &icmp4_hdr,
+					    remote_addrp, mtu) == -1) {
+    warnx("ICMP unreach needfrag packet creation failed.");
+    return (-1);
+  }
+
+  /* Calculate the IPv4 header checksum. */
+  ip4_hdr.ip_sum = cksum_calc_ip4_header(&ip4_hdr);
+
+  struct iovec iov[5];
+  uint32_t af;
+  tun_set_af(&af, AF_INET);
+  iov[0].iov_base = &af;
+  iov[0].iov_len = sizeof(uint32_t);
+  iov[1].iov_base = &ip4_hdr;
+  iov[1].iov_len = sizeof(struct ip);
+  iov[2].iov_base = NULL;
+  iov[2].iov_len = 0;
+  iov[3].iov_base = &icmp4_hdr;
+  iov[3].iov_len = ICMP_MINLEN;
+  iov[4].iov_base = in_pktp;
+  iov[4].iov_len = sizeof(struct ip);
+
+  /* Calculate the ICMPv4 header checksum. */
+  cksum_calc_ulp(IPPROTO_ICMP, iov);
+
+  if (writev(tun_fd, iov, 5) == -1) {
+    warn("failed to write ICMP unreach needfrag packet to the tun device.");
+    return (-1);
+  }
+
+  return (0);
+}
+
+/*
  * ICMP <=> ICMPv6 protocol conversion.  Currently, only the echo
  * request and echo reply messages are supported.
  *
@@ -152,48 +270,6 @@ icmpsub_convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 }
 
 /*
- * Process the incoming ICMPv4 message.  The discard_ok variable is
- * set to 1 when the incoming ICMP messages are not necessarily
- * converted to ICMPv6.
- */
-int
-icmpsub_process_icmp4(const struct icmp *icmp4_hdrp, int *discard_okp)
-{
-  assert(icmp4_hdrp != NULL);
-  assert(discard_okp != NULL);
-
-  *discard_okp = 0;
-
-  if (icmp4_hdrp->icmp_type == ICMP_ECHO
-      || icmp4_hdrp->icmp_type == ICMP_ECHOREPLY) {
-    /* These messages will be converted to ICMPv6 messages. */
-    return (0);
-  }
-
-  /* All other ICMP messages will be dropped. */
-  *discard_okp = 1;
-
-  /* Process further ICMP message contents based on the type/code. */
-  if (icmp4_hdrp->icmp_type == ICMP_UNREACH) {
-    if (icmp4_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG) {
-      struct in_addr remote_addr;
-      int mtu;
-      if (icmpsub_extract_icmp4_unreach_needfrag(icmp4_hdrp, &remote_addr,
-						 &mtu) == -1) {
-	warnx("cannot extract MTU information from the ICMP packet.");
-	return (-1);
-      }
-      if (pmtudisc_update_path_mtu_size(AF_INET, &remote_addr, mtu) == -1) {
-	warnx("cannot update path mtu information.");
-	return (-1);
-      }
-    }
-  }
-
-  return (0);
-}
-
-/*
  * Extract the final destination address of the original packet and
  * the MTU size indicated by the intermediate router which generated
  * this ICMP error message.
@@ -282,80 +358,22 @@ icmpsub_create_icmp4_unreach_needfrag(struct ip *ip4_hdrp,
   icmp4_hdrp->icmp_nextmtu = htons(mtu);
   /*
    * The caller must append the first 20 bytes of the original packet
-   * after the header.
+   * after the header.  Note that the icmp{} structure includes some
+   * additional extended fields.  So, icmp4_hdrp + 1 doesn't mean the
+   * next location of the simple ICMPv4 header.
    */
 
   return (0);
 }
 
 /*
- * Send an ICMPv4 packet with the unreach type and the needfrag code
- * to the node specidied by the remote_addrp parameter.  The source
- * address will be determined properly.
- */
-int
-icmpsub_send_icmp4_unreach_needfrag(int tun_fd, void *in_pktp,
-				    const struct in_addr *remote_addrp,
-				    int mtu)
-{
-  assert(in_pktp != NULL);
-  assert(remote_addrp != NULL);
-
-  /* Check if we can send this ICMPv4 packet or not. */
-  if (icmpsub_check_sending_rate()) {
-    warnx("ICMP rate limit over.");
-    return (0);
-  }
-
-
-  /* Prepare IPv4 and ICMPv6 headers and fill most of their fields. */
-  char ip4_hdr[sizeof(struct ip)];
-  char icmp4_hdr[sizeof(struct icmp)];
-  if (icmpsub_create_icmp4_unreach_needfrag((struct ip *)ip4_hdr,
-					    (struct icmp *)icmp4_hdr,
-					    remote_addrp,
-					    mtu) == -1) {
-    warnx("ICMP unreach needfrag packet creation failed.");
-    return (-1);
-  }
-
-  /* Calculate the IPv4 header checksum. */
-  struct ip *ip4_hdrp = (struct ip *)ip4_hdr;
-  ip4_hdrp->ip_sum = cksum_calc_ip4_header(ip4_hdrp);
-
-  struct iovec iov[5];
-  uint32_t af;
-  tun_set_af(&af, AF_INET);
-  iov[0].iov_base = &af;
-  iov[0].iov_len = sizeof(uint32_t);
-  iov[1].iov_base = ip4_hdr;
-  iov[1].iov_len = sizeof(struct ip);
-  iov[2].iov_base = NULL;
-  iov[2].iov_len = 0;
-  iov[3].iov_base = icmp4_hdr;
-  iov[3].iov_len = ICMP_MINLEN;
-  iov[4].iov_base = in_pktp;
-  iov[4].iov_len = sizeof(struct ip);
-
-  /* Calculate the ICMPv4 header checksum. */
-  cksum_calc_ulp(IPPROTO_ICMP, iov);
-
-  if (writev(tun_fd, iov, 5) == -1) {
-    warn("failed to write ICMP unreach needfrag packet to the tun device.");
-    return (-1);
-  }
-
-  return (0);
-}
-
-/*
- * Choose the proper source address of the packet to send the remote
- * node specified by the remote_addrp parameter.  The result will be
- * stored in the local_addrp parameter.
+ * Choose the proper source address of the packet to send a packet to
+ * the remote node specified by the remote_addrp parameter.  The
+ * result will be stored in the local_addrp parameter.
  */
 static int
 icmpsub_select_source_address(int af, const void *remote_addrp,
-			       void *local_addrp)
+			      void *local_addrp)
 {
   assert(remote_addrp != NULL);
   assert(local_addrp != NULL);

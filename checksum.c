@@ -76,17 +76,16 @@ cksum_calc_ip4_header(const struct ip *ip4_hdrp)
  * iov[0]: Address family (uint32_t), or struct tun_pi{}
  * iov[1]: IPv4/IPv6 header
  * iov[2]: IPv6 Fragment header (if necessary, otherwise NULL)
- * iov[3]: Upper layer protocol data
+ * iov[3]: Upper layer protocol data (at least, a header must exist)
  */
-#if defined(__linux__)
-#define th_sum check
-#define uh_sum check
-#endif
 int
 cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
 {
   assert(orig_ip_hdrp != NULL);
   assert(iov != NULL);
+  assert(iov[0].iov_base != NULL);
+  assert(iov[1].iov_base != NULL);
+  assert(iov[3].iov_base != NULL);
 
   struct tcphdr *tcp_hdrp;
   struct udphdr *udp_hdrp;
@@ -122,6 +121,10 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
     icmp6_hdrp->icmp6_cksum = ~sum & 0xffff;
     break;
 
+#if defined(__linux__)
+#define th_sum check
+#define uh_sum check
+#endif
   case IPPROTO_TCP:
     tcp_hdrp = iov[3].iov_base;
     sum = tcp_hdrp->th_sum;
@@ -141,6 +144,10 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
     ADDCARRY(sum);
     udp_hdrp->uh_sum = ~sum & 0xffff;
     break;
+#if defined(__linux__)
+#undef th_sum
+#undef uh_sum
+#endif
 
   default:
     warnx("unsupported upper layer protocol %d.", ulp);
@@ -149,10 +156,49 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
 
   return (0);
 }
-#if defined(__linux__)
-#undef th_sum
-#undef uh_sum
-#endif
+
+/*
+ * Calculate the transport layer checksum value.  The parameter must
+ * contain the entire packet to calculate the sum.
+ *
+ * The ulp parameter contains the transport protocol number.  The iov
+ * parameter contains the following information.
+ *
+ * iov[0]: Address family (uint32_t), or struct tun_pi{}
+ * iov[1]: IPv4/IPv6 header
+ * iov[2]: IPv6 Fragment header (if necessary, otherwise NULL)
+ * iov[3]: Upper layer protocol header
+ * iov[4]: Upper layer protocol data
+ */
+int
+cksum_calc_ulp(int ulp, struct iovec *iov)
+{
+  assert(iov != NULL);
+  assert(iov[0].iov_base != NULL);
+  assert(iov[1].iov_base != NULL);
+  assert(iov[3].iov_base != NULL);
+
+  int32_t sum;
+  struct icmp *icmp4_hdrp;
+  switch (ulp) {
+  case IPPROTO_ICMP:
+    icmp4_hdrp = iov[3].iov_base;
+    icmp4_hdrp->icmp_cksum = 0;
+    sum = cksum_acc_words(iov[3].iov_base, iov[3].iov_len);
+    if (iov[4].iov_base != NULL) {
+      sum += cksum_acc_words(iov[4].iov_base, iov[4].iov_len);
+    }
+    ADDCARRY(sum);
+    icmp4_hdrp->icmp_cksum = ~sum & 0xffff;
+    break;
+
+  default:
+    warnx("unsupported upper layer protocol %d.", ulp);
+    return (-1);
+  }
+
+  return (0);
+}
 
 /*
  * Adjust the checksum value of an ICMP/ICMPv6 packet, based on the

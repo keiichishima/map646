@@ -27,6 +27,7 @@
 
 uint16_t cksum_calc_ip4_header(const struct ip *);
 int cksum_update_ulp(int, const void *, struct iovec *);
+int cksum_calc_ulp(int, struct iovec *);
 int cksum_update_icmp_type_code(void *, int, int, int, int);
 
 #endif

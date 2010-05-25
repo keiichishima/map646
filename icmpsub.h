@@ -25,10 +25,10 @@
 #ifndef _ICMPSUB_H_
 #define _ICMPSUB_H_
 
-int icmpsub_convert_icmp(int, struct iovec *);
-int icmpsub_process_icmp4(const struct icmp *, int *);
+int icmpsub_process_icmp4(const struct icmp *, int, int *);
 int icmpsub_send_icmp4_unreach_needfrag(int, void *, const struct in_addr *,
 					int);
+int icmpsub_convert_icmp(int, struct iovec *);
 
 #endif
 

@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <assert.h>
 #include <err.h>
 
@@ -33,9 +34,6 @@
 #include <sys/socket.h>
 
 #include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/ip_icmp.h>
-#include <netinet/icmp6.h>
 
 struct path_mtu {
   LIST_ENTRY(path_mtu) entries;
@@ -55,13 +53,11 @@ LIST_HEAD(path_mtu_hash_listhead, path_mtu_hash);
 #define PMTUDISC_DEFAULT_MTU 1500
 #define PMTUDISC_DEFAULT_LIFETIME 3600
 #define PMTUDISC_HASH_SIZE 1009
-#define PMTUDISC_IPV4_MINMTU 68
 #define PMTUDISC_PATH_MTU_MAX_INSTANCE_SIZE 10000
 
 static struct path_mtu_listhead path_mtu_head;
 static struct path_mtu_hash_listhead path_mtu_hash_heads[PMTUDISC_HASH_SIZE];
 
-static int pmtudisc_update_pmtu(int, const void *, int);
 static int pmtudisc_get_hash_index(const void *, int);
 static struct path_mtu *pmtudisc_find_path_mtu(int, const void *addrp);
 static int pmtudisc_insert_path_mtu(struct path_mtu *);
@@ -107,47 +103,7 @@ pmtudisc_get_path_mtu_size(int af, const void *addr)
 }
 
 int
-pmtudisc_icmp_input(const struct icmp *icmp_hdrp)
-{
-  assert(icmp_hdrp->icmp_type == ICMP_UNREACH);
-  assert(icmp_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG);
-
-  /* Get the final destination address of the original packet. */
-  const struct ip *ip_hdrp = (const struct ip *)(icmp_hdrp + 1);
-  struct in_addr addr;
-  memcpy(&addr, &ip_hdrp->ip_dst, sizeof(struct in_addr));
-
-  /* Copy the nexthop MTU size notified by the intermediate gateway. */
-  int pmtu = ntohs(icmp_hdrp->icmp_nextmtu);
-  if (pmtu < PMTUDISC_IPV4_MINMTU) {
-    /*
-     * Very old implementation may not support the Path MTU discovery
-     * mechanism.
-     */
-    warnx("The recieved MTU size (%d) is too small.", pmtu);
-    /*
-     * XXX: Every router must be able to forward a datagram of 68
-     * octets without fragmentation. (RFC791: Internet Protocol)
-     */
-    pmtu = PMTUDISC_IPV4_MINMTU;
-  }
-
-  if (pmtudisc_update_pmtu(AF_INET, &addr, pmtu) == -1) {
-    warnx("cannot update path mtu information.");
-    return (-1);
-  }
-  
-  return (0);
-}
-
-int
-pmtudisc_icmp6_input(const struct icmp6_hdr *icmp6_hdrp)
-{
-  return (0);
-}
-
-static int
-pmtudisc_update_pmtu(int af, const void *addrp, int pmtu)
+pmtudisc_update_path_mtu_size(int af, const void *addrp, int pmtu)
 {
   assert(addrp != NULL);
   assert(pmtu >= 68);
