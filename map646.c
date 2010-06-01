@@ -97,7 +97,7 @@ main(int argc, char *argv[])
   strncpy(tun_if_name, TUN_DEFAULT_IF_NAME, IFNAMSIZ);
   tun_fd = tun_alloc(tun_if_name);
   if (tun_fd == -1) {
-    errx(EXIT_FAILURE, "cannot open a tun internface %s.\n", tun_if_name);
+    errx(EXIT_FAILURE, "cannot open a tun internface %s.", tun_if_name);
   }
 
   /*
