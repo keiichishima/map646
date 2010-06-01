@@ -53,7 +53,9 @@
 #define IPV6_VERSION 0x60
 #endif
 
-#define BUF_LEN 1600
+#define BUF_LEN 1600 /* XXX: should be bigger than the MTU size of the
+			local interfaces used to transmit actual
+			packets. */
 
 static int send_4to6(void *, size_t);
 static int send_6to4(void *, size_t);
@@ -149,10 +151,10 @@ cleanup_sigint(int dummy)
 }
 
 /*
- * Close the tun interface file discripter.  In BSD systems, delete
- * the tun interface by calling tun_dealloc() function.  In Linux
- * systems, the tun interface will automatically disappear when the
- * owner process dies.
+ * Close the tun interface file discripter.  This function deletes the
+ * tun interface by calling tun_dealloc() function for BSD operating
+ * systems.  In Linux systems, the tun interface will automatically
+ * disappear when the owner process dies.
  */
 void
 cleanup(void)
@@ -230,6 +232,14 @@ send_4to6(void *datap, size_t data_len)
   ip4_plen = ip4_tlen - ip4_hlen;
   ip4_ttl = ip4_hdrp->ip_ttl;
   ip4_proto = ip4_hdrp->ip_p;
+
+  /* Check the packet size. */
+  if (ip4_tlen > data_len) {
+    /* Data is too short.  Drop it. */
+    warnx("Insufficient data supplied (%ld), while IP header says (%d)",
+	  data_len, ip4_tlen);
+    return (-1);
+  }
 
   /* Fragment information check. */
   int ip4_id = ntohs(ip4_hdrp->ip_id);
@@ -588,6 +598,14 @@ send_6to4(void *datap, size_t data_len)
   }
   ip6_hop_limit = ip6_hdrp->ip6_hlim;
   
+  /* Check the packet size. */
+  if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
+    /* Data is too short.  Drop it. */
+    warnx("Insufficient data supplied (%ld), while IP header says (%ld)",
+	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
+    return (-1);
+  }
+
 #ifdef DEBUG
   char addr_name[64];
   fprintf(stderr, "src = %s\n",
