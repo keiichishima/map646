@@ -1,0 +1,11 @@
+#!/bin/sh
+
+while true
+do
+	/bin/ps -ef | /bin/grep map646 | /bin/grep -v "grep\|map646watch" > /dev/null 2>&1 
+	if [ $? -ne 0 ]; then
+		sh /etc/init.d/map646 start > /dev/null 2>&1
+	fi
+	sleep 60
+done
+
