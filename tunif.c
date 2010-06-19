@@ -102,7 +102,7 @@ tun_alloc(char *tun_if_name)
   strncpy(tun_if_name, ifr.ifr_name, IFNAMSIZ);
 
   char tun_dev_name[MAXPATHLEN];
-  strcat(tun_dev_name, "/dev/");
+  strncpy(tun_dev_name, "/dev/", sizeof(tun_dev_name));
   strcat(tun_dev_name, ifr.ifr_name);
 
   int tun_fd;
