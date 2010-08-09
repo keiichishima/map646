@@ -131,5 +131,7 @@ www.yahoo.com (assuming that it doesn't have IPv6 addresses and its
 IPv4 address is 72.30.2.43), your internal DNS server must reply
 64::481e:22b.
 
-Unfortunately, this program doesn't include the modified DNS server.
-Probably, you can reuse the work of DNS64 guys.
+Unfortunately, this map646 package doesn't include the modified DNS
+server.  You may be interested in using Trick Or Treat Daemon (totd)
+for this function
+(http://www.vermicelli.pasta.cs.uit.no/software/totd.html)
