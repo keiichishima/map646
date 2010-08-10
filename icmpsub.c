@@ -205,7 +205,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
     orig_ip4_hdr.ip_p = IPPROTO_TCP;
     memcpy(&orig_ip4_hdr.ip_src, &orig_local_addr4, sizeof(struct in_addr));
     memcpy(&orig_ip4_hdr.ip_dst, &orig_remote_addr4, sizeof(struct in_addr));
-    /* XXX: is checksum needed? */
+    orig_ip4_hdr.ip_sum = cksum_calc_ip4_header(&orig_ip4_hdr);
 #define IP6_FRAG6_HDR_LEN (sizeof(struct ip6_hdr) + sizeof(struct ip6_frag))
     if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, &orig_ip4_hdr,
 					    &orig_local_addr4,
