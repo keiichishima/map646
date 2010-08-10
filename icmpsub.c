@@ -38,8 +38,10 @@
 #include <netinet/ip_icmp.h>
 #include <netinet/icmp6.h>
 
+#include "icmpsub.h"
 #include "tunif.h"
 #include "checksum.h"
+#include "mapping.h"
 #include "pmtudisc.h"
 
 #define ICMPSUB_IPV4_MINMTU 68
@@ -49,6 +51,7 @@
 static int icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *,
 						  struct in_addr *, int *);
 static int icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *,
+						struct in6_addr *,
 						struct in6_addr *, int *);
 static int icmpsub_create_icmp4_unreach_needfrag(struct ip *, struct icmp *,
 						 const struct in_addr *, int);
@@ -122,8 +125,8 @@ icmpsub_process_icmp4(const struct icmp *icmp4_hdrp, int icmp4_size,
  * converted to ICMPv6.
  */
 int
-icmpsub_process_icmp6(const struct icmp6_hdr *icmp6_hdrp, int icmp6_size,
-		      int *discard_okp)
+icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
+		      int icmp6_size, int *discard_okp)
 {
   assert(icmp6_hdrp != NULL);
   assert(discard_okp != NULL);
@@ -160,15 +163,54 @@ icmpsub_process_icmp6(const struct icmp6_hdr *icmp6_hdrp, int icmp6_size,
       return (-1);
     }
 
-    struct in6_addr remote_addr;
+    struct in6_addr orig_local_addr, orig_remote_addr;
     int mtu;
-    if (icmpsub_extract_icmp6_packet_too_big(icmp6_hdrp, &remote_addr,
+    if (icmpsub_extract_icmp6_packet_too_big(icmp6_hdrp, &orig_local_addr,
+					     &orig_remote_addr,
 					     &mtu) == -1) {
       warnx("cannot extract MTU information from the ICMPv6 packet.");
       return (-1);
     }
-    if (pmtudisc_update_path_mtu_size(AF_INET6, &remote_addr, mtu) == -1) {
+    if (pmtudisc_update_path_mtu_size(AF_INET6, &orig_remote_addr, mtu)
+	== -1) {
       warnx("cannot update path mtu information.");
+      return (-1);
+    }
+
+    /*
+     * Generate ICMP destination unreach message with a needfrag code
+     *
+     *   outer source: map646 node's local IPv4 address
+     *   outer destination: IPv4 converted from orig_local_addr
+     *   inner source: IPv4 converted from orig_local_addr
+     *   inner destination: IPv4 converted from orig_remote_addr
+     */
+    struct in_addr orig_local_addr4, orig_remote_addr4;
+    if (mapping_convert_addrs_6to4(&orig_remote_addr, &orig_local_addr,
+				   &orig_remote_addr4, &orig_local_addr4)
+	== -1) {
+      warnx("no mapping available.  gave up to send ICMP unreach needfrag.");
+      return (-1);
+    }
+    /*
+     * Construct a dummy IPv4 inner header to store original
+     * destination address.
+     */
+    struct ip orig_ip4_hdr;
+    memset(&orig_ip4_hdr, 0, sizeof(struct ip));
+    orig_ip4_hdr.ip_v = 4;
+    orig_ip4_hdr.ip_hl = sizeof(struct ip) >> 2;
+    orig_ip4_hdr.ip_len = htons(sizeof(struct ip));  /* The dummy header. */
+    orig_ip4_hdr.ip_ttl = 64;
+    orig_ip4_hdr.ip_p = IPPROTO_TCP;
+    memcpy(&orig_ip4_hdr.ip_src, &orig_local_addr4, sizeof(struct in_addr));
+    memcpy(&orig_ip4_hdr.ip_dst, &orig_remote_addr4, sizeof(struct in_addr));
+    /* XXX: is checksum needed? */
+#define IP6_FRAG6_HDR_LEN (sizeof(struct ip6_hdr) + sizeof(struct ip6_frag))
+    if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, &orig_ip4_hdr,
+					    &orig_local_addr4,
+					    mtu - IP6_FRAG6_HDR_LEN) == -1) {
+      warnx("failed to send ICMP unreach needfrag.");
       return (-1);
     }
   }
@@ -377,17 +419,20 @@ icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *icmp_hdrp,
  */
 static int
 icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *icmp6_hdrp,
-				     struct in6_addr *remote_addrp,
+				     struct in6_addr *orig_local_addrp,
+				     struct in6_addr *orig_remote_addrp,
 				     int *mtup)
 {
   assert(icmp6_hdrp != NULL);
   assert(icmp6_hdrp->icmp6_type == ICMP6_PACKET_TOO_BIG);
-  assert(remote_addrp != NULL);
+  assert(orig_local_addrp != NULL);
+  assert(orig_remote_addrp != NULL);
   assert(mtup != NULL);
 
-  /* Get the final destination address of the original packet. */
+  /* Get the final source/destination address of the original packet. */
   const struct ip6_hdr *ip6_hdrp = (const struct ip6_hdr *)(icmp6_hdrp + 1);
-  memcpy(remote_addrp, &ip6_hdrp->ip6_dst, sizeof(struct in6_addr));
+  memcpy(orig_local_addrp, &ip6_hdrp->ip6_src, sizeof(struct in6_addr));
+  memcpy(orig_remote_addrp, &ip6_hdrp->ip6_dst, sizeof(struct in6_addr));
 
   /* Copy the nexthop MTU size notified by the intermediate gateway. */
   *mtup = ntohl(icmp6_hdrp->icmp6_mtu);

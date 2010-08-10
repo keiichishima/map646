@@ -561,7 +561,7 @@ send_6to4(void *datap, size_t data_len)
   /* XXX: we don't handle fragmented ICMPv6 messages. */
   if (ip6_next_header == IPPROTO_ICMPV6) {
     int discard_ok = 0;
-    if (icmpsub_process_icmp6((const struct icmp6_hdr *)packetp,
+    if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
 			      data_len - ((void *)packetp - datap),
 			      &discard_ok)
 	== -1) {
