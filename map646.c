@@ -265,8 +265,6 @@ send_4to6(void *datap, size_t data_len)
 
   /* ICMP error handling. */
   if (ip4_proto == IPPROTO_ICMP) {
-    /* XXX: need to check the minimum size of the incoming ICMP before
-       further processing. */
     int discard_ok = 0;
     if (icmpsub_process_icmp4((const struct icmp *)packetp,
 			      data_len - ((void *)packetp - datap),
@@ -558,6 +556,20 @@ send_6to4(void *datap, size_t data_len)
   ip6_hdrp = (struct ip6_hdr *)packetp;
   ip6_next_header = ip6_hdrp->ip6_nxt;
   packetp += sizeof(struct ip6_hdr);
+
+  /* ICMPv6 error handling. */
+  /* XXX: we don't handle fragmented ICMPv6 messages. */
+  if (ip6_next_header == IPPROTO_ICMPV6) {
+    int discard_ok = 0;
+    if (icmpsub_process_icmp6((const struct icmp6_hdr *)packetp,
+			      data_len - ((void *)packetp - datap),
+			      &discard_ok)
+	== -1) {
+      return (0);
+    }
+    if (discard_ok)
+      return (0);
+  }
 
   /* Fragment header check. */
   struct ip6_frag *ip6_frag_hdrp = NULL;

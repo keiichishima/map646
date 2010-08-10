@@ -43,10 +43,13 @@
 #include "pmtudisc.h"
 
 #define ICMPSUB_IPV4_MINMTU 68
+#define ICMPSUB_IPV6_MINMTU 1280
 #define ICMPSUB_RATE_LIMIT_COUNT 10
 
 static int icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *,
 						  struct in_addr *, int *);
+static int icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *,
+						struct in6_addr *, int *);
 static int icmpsub_create_icmp4_unreach_needfrag(struct ip *, struct icmp *,
 						 const struct in_addr *, int);
 static int icmpsub_select_source_address(int, const void *, void *);
@@ -107,6 +110,66 @@ icmpsub_process_icmp4(const struct icmp *icmp4_hdrp, int icmp4_size,
 	warnx("cannot update path mtu information.");
 	return (-1);
       }
+    }
+  }
+
+  return (0);
+}
+
+/*
+ * Process the incoming ICMPv6 message.  The discard_ok variable is
+ * set to 1 when the incoming ICMPv6 messages are not necessarily
+ * converted to ICMPv6.
+ */
+int
+icmpsub_process_icmp6(const struct icmp6_hdr *icmp6_hdrp, int icmp6_size,
+		      int *discard_okp)
+{
+  assert(icmp6_hdrp != NULL);
+  assert(discard_okp != NULL);
+
+  *discard_okp = 0;
+
+  if (icmp6_size < sizeof(struct icmp6_hdr)) {
+    warnx("ICMPv6 message must be longer than %ld (%d received).",
+	  sizeof(struct icmp6_hdr), icmp6_size);
+    *discard_okp = 1;
+    return (-1);
+  }
+
+  if (icmp6_hdrp->icmp6_type == ICMP6_ECHO_REQUEST
+      || icmp6_hdrp->icmp6_type == ICMP6_ECHO_REPLY) {
+    /* These messages will be converted to ICMP messages. */
+    return (0);
+  }
+
+  /* All other ICMPv6 messages will be discarded. */
+  *discard_okp = 1;
+
+  /* Process further ICMPv6 message contents based on the type/code. */
+  if (icmp6_hdrp->icmp6_type == ICMP6_PACKET_TOO_BIG) {
+    /* Path MTU discovery procedure. */
+    if (icmp6_size < sizeof(struct icmp6_hdr) + sizeof(struct ip6_hdr)) {
+      /*
+       * The original IPv6 header is necessary to extract the
+       * destination address of the original packet.
+       */
+      warnx("ICMP6_PACKET_TOO_BIG message must be longer than %ld "
+	    "(%d received).",
+	    sizeof(struct icmp6_hdr) + sizeof(struct ip6_hdr), icmp6_size);
+      return (-1);
+    }
+
+    struct in6_addr remote_addr;
+    int mtu;
+    if (icmpsub_extract_icmp6_packet_too_big(icmp6_hdrp, &remote_addr,
+					     &mtu) == -1) {
+      warnx("cannot extract MTU information from the ICMPv6 packet.");
+      return (-1);
+    }
+    if (pmtudisc_update_path_mtu_size(AF_INET6, &remote_addr, mtu) == -1) {
+      warnx("cannot update path mtu information.");
+      return (-1);
     }
   }
 
@@ -296,12 +359,46 @@ icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *icmp_hdrp,
      * Very old implementation may not support the Path MTU discovery
      * mechanism.
      */
-    warnx("The recieved MTU size (%d) is too small.", *mtup);
+    warnx("The received IPv4 MTU size (%d) is too small.", *mtup);
     /*
      * XXX: Every router must be able to forward a datagram of 68
      * octets without fragmentation. (RFC791: Internet Protocol)
      */
     *mtup = ICMPSUB_IPV4_MINMTU;
+  }
+
+  return (0);
+}
+
+/*
+ * Extract the final destination address of the original packet and
+ * the MTU size indicated by the intermediate router which generated
+ * this ICMPv6 Packet Too Big message.
+ */
+static int
+icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *icmp6_hdrp,
+				     struct in6_addr *remote_addrp,
+				     int *mtup)
+{
+  assert(icmp6_hdrp != NULL);
+  assert(icmp6_hdrp->icmp6_type == ICMP6_PACKET_TOO_BIG);
+  assert(remote_addrp != NULL);
+  assert(mtup != NULL);
+
+  /* Get the final destination address of the original packet. */
+  const struct ip6_hdr *ip6_hdrp = (const struct ip6_hdr *)(icmp6_hdrp + 1);
+  memcpy(remote_addrp, &ip6_hdrp->ip6_dst, sizeof(struct in6_addr));
+
+  /* Copy the nexthop MTU size notified by the intermediate gateway. */
+  *mtup = ntohl(icmp6_hdrp->icmp6_mtu);
+  if (*mtup < ICMPSUB_IPV6_MINMTU) {
+    warnx("The received IPv6 MTU size (%d) is too small.", *mtup);
+    /*
+     * IPv6 requires that every link in the internet have an MTU of
+     * 1280 octets or greater. (RFC2460: Internet Protocol, Version 6
+     * (IPv6) Specification)
+     */
+    *mtup = ICMPSUB_IPV6_MINMTU;
   }
 
   return (0);
