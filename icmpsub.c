@@ -507,7 +507,8 @@ icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *icmp_hdrp,
   assert(mtup != NULL);
 
   /* Get the final destination address of the original packet. */
-  const struct ip *ip_hdrp = (const struct ip *)(icmp_hdrp + ICMP_MINLEN);
+  const struct ip *ip_hdrp = (const struct ip *)
+    (((uint8_t *)icmp_hdrp) + ICMP_MINLEN);
   memcpy(local_addrp, &ip_hdrp->ip_src, sizeof(struct in_addr));
   memcpy(remote_addrp, &ip_hdrp->ip_dst, sizeof(struct in_addr));
 
