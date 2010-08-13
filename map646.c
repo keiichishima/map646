@@ -316,7 +316,7 @@ send_4to6(void *datap, size_t data_len)
      * need_fragment code.  ICMP error message generation will be rate
      * limited.
      */
-    if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, datap, &ip4_src,
+    if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, datap, &ip4_dst, &ip4_src,
 					    mtu - IP6_FRAG6_HDR_LEN)
 	== -1) {
       warnx("sending ICMP unreach w/ needfrag failed.");

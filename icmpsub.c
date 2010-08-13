@@ -54,8 +54,11 @@ static int icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *,
 						struct in6_addr *,
 						struct in6_addr *, int *);
 static int icmpsub_create_icmp4_unreach_needfrag(struct ip *, struct icmp *,
+						 const struct in_addr *,
 						 const struct in_addr *, int);
+#if 0
 static int icmpsub_select_source_address(int, const void *, void *);
+#endif
 static int icmpsub_check_sending_rate(void);
 
 /*
@@ -208,6 +211,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
     orig_ip4_hdr.ip_sum = cksum_calc_ip4_header(&orig_ip4_hdr);
 #define IP6_FRAG6_HDR_LEN (sizeof(struct ip6_hdr) + sizeof(struct ip6_frag))
     if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, &orig_ip4_hdr,
+					    &orig_remote_addr4,
 					    &orig_local_addr4,
 					    mtu - IP6_FRAG6_HDR_LEN) == -1) {
       warnx("failed to send ICMP unreach needfrag.");
@@ -221,14 +225,17 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
 /*
  * Send an ICMPv4 packet with the unreach type and the needfrag code
  * to the node specidied by the remote_addrp parameter.  The source
- * address will be determined properly.
+ * address is the IPv4 address related to the final IPv6 node of the
+ * original packet that caused this ICMPv4 error.
  */
 int
 icmpsub_send_icmp4_unreach_needfrag(int tun_fd, void *in_pktp,
+				    const struct in_addr *local_addrp,
 				    const struct in_addr *remote_addrp,
 				    int mtu)
 {
   assert(in_pktp != NULL);
+  assert(local_addrp != NULL);
   assert(remote_addrp != NULL);
 
   /* Check if we can send this ICMPv4 packet or not. */
@@ -242,7 +249,8 @@ icmpsub_send_icmp4_unreach_needfrag(int tun_fd, void *in_pktp,
   struct ip ip4_hdr;
   struct icmp icmp4_hdr;
   if (icmpsub_create_icmp4_unreach_needfrag(&ip4_hdr, &icmp4_hdr,
-					    remote_addrp, mtu) == -1) {
+					    local_addrp, remote_addrp,
+					    mtu) == -1) {
     warnx("ICMP unreach needfrag packet creation failed.");
     return (-1);
   }
@@ -463,20 +471,14 @@ icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *icmp6_hdrp,
 static int
 icmpsub_create_icmp4_unreach_needfrag(struct ip *ip4_hdrp,
 				      struct icmp *icmp4_hdrp,
+				      const struct in_addr *local_addrp,
 				      const struct in_addr *remote_addrp,
 				      int mtu)
 {
   assert(ip4_hdrp != NULL);
   assert(icmp4_hdrp != NULL);
+  assert(local_addrp != NULL);
   assert(remote_addrp != NULL);
-
-  struct in_addr local_addr;
-
-  if (icmpsub_select_source_address(AF_INET, remote_addrp, &local_addr)
-      == -1) {
-    warnx("cannot assign a local address for a new ICMP message.");
-    return (-1);
-  }
 
   /* Fill the IPv4 header part. */
   memset(ip4_hdrp, 0, sizeof(struct ip));
@@ -489,7 +491,7 @@ icmpsub_create_icmp4_unreach_needfrag(struct ip *ip4_hdrp,
 			   );
   ip4_hdrp->ip_ttl = 64; /* XXX */
   ip4_hdrp->ip_p = IPPROTO_ICMP;
-  memcpy(&ip4_hdrp->ip_src, &local_addr, sizeof(struct in_addr));
+  memcpy(&ip4_hdrp->ip_src, local_addrp, sizeof(struct in_addr));
   memcpy(&ip4_hdrp->ip_dst, remote_addrp, sizeof(struct in_addr));
   /* Note that the checksum must be filled by the caller. */
 
@@ -508,6 +510,7 @@ icmpsub_create_icmp4_unreach_needfrag(struct ip *ip4_hdrp,
   return (0);
 }
 
+#if 0
 /*
  * Choose the proper source address of the packet to send a packet to
  * the remote node specified by the remote_addrp parameter.  The
@@ -608,6 +611,7 @@ icmpsub_select_source_address(int af, const void *remote_addrp,
 
   return (0);
 }
+#endif
 
 static int
 icmpsub_check_sending_rate(void)
