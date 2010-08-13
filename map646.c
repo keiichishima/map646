@@ -266,7 +266,7 @@ send_4to6(void *datap, size_t data_len)
   /* ICMP error handling. */
   if (ip4_proto == IPPROTO_ICMP) {
     int discard_ok = 0;
-    if (icmpsub_process_icmp4((const struct icmp *)packetp,
+    if (icmpsub_process_icmp4(tun_fd, (const struct icmp *)packetp,
 			      data_len - ((void *)packetp - datap),
 			      &discard_ok)
 	== -1) {
@@ -663,6 +663,17 @@ send_6to4(void *datap, size_t data_len)
   int mtu = pmtudisc_get_path_mtu_size(AF_INET, &ip4_dst);
   if (ip6_payload_len > mtu - sizeof(struct ip)) {
     /* Fragment is needed for this packet. */
+
+    /*
+     * Send an ICMPv6 Packet Too Big message.  ICMP error message
+     * generation will be rate limited.
+     */
+    if (icmpsub_send_icmp6_packet_too_big(tun_fd, datap, &ip6_dst, &ip6_src,
+					  mtu) == -1) {
+      warnx("sending ICMPv6 Packet Too Big failed.");
+      /* Continue processing anyway. */
+    }
+
     int frag_payload_unit = ((mtu - sizeof(struct ip)) >> 3) << 3;
     if (ip6_id == 0) {
       /*

@@ -44,11 +44,15 @@
 #include "mapping.h"
 #include "pmtudisc.h"
 
+#if defined(__linux__)
+#define IPV6_VERSION 0x60
+#endif
 #define ICMPSUB_IPV4_MINMTU 68
 #define ICMPSUB_IPV6_MINMTU 1280
 #define ICMPSUB_RATE_LIMIT_COUNT 10
 
 static int icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *,
+						  struct in_addr *,
 						  struct in_addr *, int *);
 static int icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *,
 						struct in6_addr *,
@@ -56,6 +60,10 @@ static int icmpsub_extract_icmp6_packet_too_big(const struct icmp6_hdr *,
 static int icmpsub_create_icmp4_unreach_needfrag(struct ip *, struct icmp *,
 						 const struct in_addr *,
 						 const struct in_addr *, int);
+static int icmpsub_create_icmp6_packet_too_big(struct ip6_hdr *,
+					       struct icmp6_hdr *,
+					       const struct in6_addr *,
+					       const struct in6_addr *, int);
 #if 0
 static int icmpsub_select_source_address(int, const void *, void *);
 #endif
@@ -67,8 +75,8 @@ static int icmpsub_check_sending_rate(void);
  * converted to ICMPv6.
  */
 int
-icmpsub_process_icmp4(const struct icmp *icmp4_hdrp, int icmp4_size,
-		      int *discard_okp)
+icmpsub_process_icmp4(int tun_fd, const struct icmp *icmp4_hdrp,
+		      int icmp4_size, int *discard_okp)
 {
   assert(icmp4_hdrp != NULL);
   assert(discard_okp != NULL);
@@ -105,15 +113,56 @@ icmpsub_process_icmp4(const struct icmp *icmp4_hdrp, int icmp4_size,
 	return (-1);
       }
 
-      struct in_addr remote_addr;
+      struct in_addr orig_local_addr, orig_remote_addr;
       int mtu;
-      if (icmpsub_extract_icmp4_unreach_needfrag(icmp4_hdrp, &remote_addr,
+      if (icmpsub_extract_icmp4_unreach_needfrag(icmp4_hdrp,
+						 &orig_local_addr,
+						 &orig_remote_addr,
 						 &mtu) == -1) {
 	warnx("cannot extract MTU information from the ICMP packet.");
 	return (-1);
       }
-      if (pmtudisc_update_path_mtu_size(AF_INET, &remote_addr, mtu) == -1) {
+      if (pmtudisc_update_path_mtu_size(AF_INET, &orig_remote_addr,
+					mtu) == -1) {
 	warnx("cannot update path mtu information.");
+	return (-1);
+      }
+
+      /*
+       * Generate ICMPv6 Packe Too Big message
+       *
+       *   outer source: converted from orig_remote_addr
+       *   outer destination: converted from orig_local_addr
+       *   inner source: converted from orig_local_addr
+       *   inner destination: converted from orig_remote_addr
+       */
+      struct in6_addr orig_local_addr6, orig_remote_addr6;
+      if (mapping_convert_addrs_4to6(&orig_remote_addr, &orig_local_addr,
+				     &orig_remote_addr6, &orig_local_addr6)
+	  == -1) {
+	warnx("no mapping available.  gave up to convert ICMP destination unreach/needfrag message to ICMPv6 packet too big message.");
+	return (-1);
+      }
+      /*
+       * Construct a dummy IPv6 inner header to store original
+       * destination address.
+       */
+      struct ip6_hdr orig_ip6_hdr;
+      memset(&orig_ip6_hdr, 0, sizeof(struct ip6_hdr));
+      orig_ip6_hdr.ip6_vfc = IPV6_VERSION;
+      orig_ip6_hdr.ip6_plen
+	= htons(sizeof(struct ip6_hdr));  /* The dummy header. */
+      orig_ip6_hdr.ip6_nxt = IPPROTO_ICMPV6;
+      orig_ip6_hdr.ip6_hlim = 64; /* XXX */
+      memcpy(&orig_ip6_hdr.ip6_src, &orig_local_addr6,
+	     sizeof(struct in6_addr));
+      memcpy(&orig_ip6_hdr.ip6_dst, &orig_remote_addr6,
+	     sizeof(struct in6_addr));
+      if (icmpsub_send_icmp6_packet_too_big(tun_fd, &orig_ip6_hdr,
+					    &orig_remote_addr6,
+					    &orig_local_addr6,
+					    mtu) == -1) {
+	warnx("failed to send ICMPv6 Packet Too Big message.");
 	return (-1);
       }
     }
@@ -183,7 +232,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
     /*
      * Generate ICMP destination unreach message with a needfrag code
      *
-     *   outer source: map646 node's local IPv4 address
+     *   outer source: IPv4 converted from orig_remote_addr
      *   outer destination: IPv4 converted from orig_local_addr
      *   inner source: IPv4 converted from orig_local_addr
      *   inner destination: IPv4 converted from orig_remote_addr
@@ -192,7 +241,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
     if (mapping_convert_addrs_6to4(&orig_remote_addr, &orig_local_addr,
 				   &orig_remote_addr4, &orig_local_addr4)
 	== -1) {
-      warnx("no mapping available.  gave up to send ICMP unreach needfrag.");
+      warnx("no mapping available.  gave up to convert ICMPv6 packet too big message to ICMP destination unreach/needfrag message.");
       return (-1);
     }
     /*
@@ -245,7 +294,7 @@ icmpsub_send_icmp4_unreach_needfrag(int tun_fd, void *in_pktp,
   }
 
 
-  /* Prepare IPv4 and ICMPv6 headers and fill most of their fields. */
+  /* Prepare IPv4 and ICMPv4 headers and fill most of their fields. */
   struct ip ip4_hdr;
   struct icmp icmp4_hdr;
   if (icmpsub_create_icmp4_unreach_needfrag(&ip4_hdr, &icmp4_hdr,
@@ -277,6 +326,63 @@ icmpsub_send_icmp4_unreach_needfrag(int tun_fd, void *in_pktp,
 
   if (writev(tun_fd, iov, 5) == -1) {
     warn("failed to write ICMP unreach needfrag packet to the tun device.");
+    return (-1);
+  }
+
+  return (0);
+}
+
+/*
+ * Send an ICMPv6 packet with the Packet Too Big type to the node
+ * specidied by the remote_addrp parameter.  The source address is the
+ * IPv6 address related to the final IPv4 node of the original packet
+ * that caused this ICMPv6 error.
+ */
+int
+icmpsub_send_icmp6_packet_too_big(int tun_fd, void *in_pktp,
+				  const struct in6_addr *local_addrp,
+				  const struct in6_addr *remote_addrp,
+				  int mtu)
+{
+  assert(in_pktp != NULL);
+  assert(local_addrp != NULL);
+  assert(remote_addrp != NULL);
+
+  /* Check if we can send this ICMPv6 packet or not. */
+  if (icmpsub_check_sending_rate()) {
+    warnx("ICMP rate limit over.");
+    return (0);
+  }
+
+  /* Prepare IPv6 and ICMPv6 headers and fill most of their fields. */
+  struct ip6_hdr ip6_hdr;
+  struct icmp6_hdr icmp6_hdr;
+  if (icmpsub_create_icmp6_packet_too_big(&ip6_hdr, &icmp6_hdr,
+					  local_addrp, remote_addrp,
+					  mtu) == -1) {
+    warnx("ICMPv6 packet too big header creation failed.");
+    return (-1);
+  }
+
+  struct iovec iov[5];
+  uint32_t af;
+  tun_set_af(&af, AF_INET6);
+  iov[0].iov_base = &af;
+  iov[0].iov_len = sizeof(uint32_t);
+  iov[1].iov_base = &ip6_hdr;
+  iov[1].iov_len = sizeof(struct ip6_hdr);
+  iov[2].iov_base = NULL;
+  iov[2].iov_len = 0;
+  iov[3].iov_base = &icmp6_hdr;
+  iov[3].iov_len = sizeof(struct icmp6_hdr);
+  iov[4].iov_base = in_pktp;
+  iov[4].iov_len = sizeof(struct ip6_hdr);
+
+  /* Calculate the ICMPv6 header checksum. */
+  cksum_calc_ulp(IPPROTO_ICMPV6, iov);
+
+  if (writev(tun_fd, iov, 5) == -1) {
+    warn("failed to write ICMPv6 packet too big message to the tun device.");
     return (-1);
   }
 
@@ -389,17 +495,20 @@ icmpsub_convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
  */
 static int
 icmpsub_extract_icmp4_unreach_needfrag(const struct icmp *icmp_hdrp,
+				       struct in_addr *local_addrp,
 				       struct in_addr *remote_addrp,
 				       int *mtup)
 {
   assert(icmp_hdrp != NULL);
   assert(icmp_hdrp->icmp_type == ICMP_UNREACH);
   assert(icmp_hdrp->icmp_code == ICMP_UNREACH_NEEDFRAG);
+  assert(local_addrp != NULL);
   assert(remote_addrp != NULL);
   assert(mtup != NULL);
 
   /* Get the final destination address of the original packet. */
   const struct ip *ip_hdrp = (const struct ip *)(icmp_hdrp + 1);
+  memcpy(local_addrp, &ip_hdrp->ip_src, sizeof(struct in_addr));
   memcpy(remote_addrp, &ip_hdrp->ip_dst, sizeof(struct in_addr));
 
   /* Copy the nexthop MTU size notified by the intermediate gateway. */
@@ -505,6 +614,55 @@ icmpsub_create_icmp4_unreach_needfrag(struct ip *ip4_hdrp,
    * after the header.  Note that the icmp{} structure includes some
    * additional extended fields.  So, icmp4_hdrp + 1 doesn't mean the
    * next location of the simple ICMPv4 header.
+   */
+
+  return (0);
+}
+
+/*
+ * Create IPv6 header in the ip6_hdrp parameter and ICMPv6 header in
+ * the icmp6_hdrp parameter to construct an ICMPv6 error with the
+ * packet too big type.  Note that the final ICMPv6 message must have
+ * 40 bytes data part containing the original packet.  The caller must
+ * prepare that part accordingly.
+ *
+ * The remote_addrp parameter is the originator of the original
+ * packet, and the mtu parameter is the suggested size within which
+ * this node can forward without fragmentation.
+ */
+static int
+icmpsub_create_icmp6_packet_too_big(struct ip6_hdr *ip6_hdrp,
+				    struct icmp6_hdr *icmp6_hdrp,
+				    const struct in6_addr *local_addrp,
+				    const struct in6_addr *remote_addrp,
+				    int mtu)
+{
+  assert(ip6_hdrp != NULL);
+  assert(icmp6_hdrp != NULL);
+  assert(local_addrp != NULL);
+  assert(remote_addrp != NULL);
+
+  /* Fill the IPv6 header part. */
+  memset(ip6_hdrp, 0, sizeof(struct ip6_hdr));
+  ip6_hdrp->ip6_vfc = IPV6_VERSION;
+  ip6_hdrp->ip6_plen = htons(sizeof(struct ip6_hdr)     /* IPv6. */
+			     + sizeof(struct icmp6_hdr) /* ICMPv6. */
+			     + sizeof(struct ip6_hdr)   /* The space for the
+							   original packet */
+			     );
+  ip6_hdrp->ip6_nxt = IPPROTO_ICMPV6;
+  ip6_hdrp->ip6_hlim = 64; /* XXX */
+  memcpy(&ip6_hdrp->ip6_src, local_addrp, sizeof(struct in6_addr));
+  memcpy(&ip6_hdrp->ip6_dst, remote_addrp, sizeof(struct in6_addr));
+
+  /* Fill the ICMPv6 header. */
+  memset(icmp6_hdrp, 0, sizeof(struct icmp6_hdr));
+  icmp6_hdrp->icmp6_type = ICMP6_PACKET_TOO_BIG;
+  icmp6_hdrp->icmp6_code = 0;
+  icmp6_hdrp->icmp6_mtu = htonl(mtu);
+  /*
+   * The caller must append the first 40 bytes of the original packet
+   * after this header.
    */
 
   return (0);
