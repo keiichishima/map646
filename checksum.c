@@ -180,6 +180,7 @@ cksum_calc_ulp(int ulp, struct iovec *iov)
 
   int32_t sum;
   struct icmp *icmp4_hdrp;
+  struct icmp6_hdr *icmp6_hdrp;
   switch (ulp) {
   case IPPROTO_ICMP:
     icmp4_hdrp = iov[3].iov_base;
@@ -190,6 +191,18 @@ cksum_calc_ulp(int ulp, struct iovec *iov)
     }
     ADDCARRY(sum);
     icmp4_hdrp->icmp_cksum = ~sum & 0xffff;
+    break;
+
+  case IPPROTO_ICMPV6:
+    icmp6_hdrp = iov[3].iov_base;
+    icmp6_hdrp->icmp6_cksum = 0;
+    sum = cksum_acc_ip_pheader(iov[1].iov_base);
+    sum += cksum_acc_words(iov[3].iov_base, iov[3].iov_len);
+    if (iov[4].iov_base != NULL) {
+      sum += cksum_acc_words(iov[4].iov_base, iov[4].iov_len);
+    }
+    ADDCARRY(sum);
+    icmp6_hdrp->icmp6_cksum = ~sum & 0xfff;
     break;
 
   default:
