@@ -129,7 +129,7 @@ icmpsub_process_icmp4(int tun_fd, const struct icmp *icmp4_hdrp,
       }
 
       /*
-       * Generate ICMPv6 Packe Too Big message
+       * Generate ICMPv6 Packet Too Big message
        *
        *   outer source: converted from orig_remote_addr
        *   outer destination: converted from orig_local_addr
@@ -646,10 +646,9 @@ icmpsub_create_icmp6_packet_too_big(struct ip6_hdr *ip6_hdrp,
   /* Fill the IPv6 header part. */
   memset(ip6_hdrp, 0, sizeof(struct ip6_hdr));
   ip6_hdrp->ip6_vfc = IPV6_VERSION;
-  ip6_hdrp->ip6_plen = htons(sizeof(struct ip6_hdr)     /* IPv6. */
-			     + sizeof(struct icmp6_hdr) /* ICMPv6. */
-			     + sizeof(struct ip6_hdr)   /* The space for the
-							   original packet */
+  ip6_hdrp->ip6_plen = htons(sizeof(struct icmp6_hdr) /* ICMPv6. */
+			     + sizeof(struct ip6_hdr) /* The space for the
+							 original packet. */
 			     );
   ip6_hdrp->ip6_nxt = IPPROTO_ICMPV6;
   ip6_hdrp->ip6_hlim = 64; /* XXX */
