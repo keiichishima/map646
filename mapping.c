@@ -125,8 +125,18 @@ mapping_create_table(const char *map646_conf_path)
 	free(mappingp);
 	continue;
       }
+      if (mapping_find_mapping_with_ip4_addr(&mappingp->addr4)) {
+	warnx("line %d: duplicate entry for addrss %s.", line_count, addr1);
+	free(mappingp);
+	continue;
+      }
       if (inet_pton(AF_INET6, addr2, &mappingp->addr6) != 1) {
 	warn("line %d: invalid address %s.", line_count, addr1);
+	free(mappingp);
+	continue;
+      }
+      if (mapping_find_mapping_with_ip6_addr(&mappingp->addr6)) {
+	warnx("line %d: duplicate entry for addrss %s.", line_count, addr2);
 	free(mappingp);
 	continue;
       }
