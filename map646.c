@@ -33,6 +33,9 @@
 #include <sys/uio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#if defined(CAMP_1103_HACK)
+#include <sys/stat.h>
+#endif
 
 #include <net/if.h>
 
@@ -93,6 +96,16 @@ main(int argc, char *argv[])
   if (mapping_create_table(map646_conf_path) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
+#if defined(CAMP_1103_HACK)
+#define CAMP_1103_HACK_CONF "/etc/map646-camp-1103.conf"
+  struct stat hack_conf_stat;
+  memset(&hack_conf_stat, 0, sizeof(struct stat));
+  if (stat(CAMP_1103_HACK_CONF, &hack_conf_stat) == 0) {
+    if (mapping_create_table(CAMP_1103_HACK_CONF) == -1) {
+      errx(EXIT_FAILURE, "mapping table creation for camp-1103 failed.");
+    }
+  }
+#endif
 
   /* Create a tun interface. */
   tun_fd = -1;
