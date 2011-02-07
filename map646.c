@@ -204,6 +204,16 @@ reload_sighup(int dummy)
   if (mapping_create_table(map646_conf_path) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
+#if defined(CAMP_1103_HACK)
+#define CAMP_1103_HACK_CONF "/etc/map646-camp-1103.conf"
+  struct stat hack_conf_stat;
+  memset(&hack_conf_stat, 0, sizeof(struct stat));
+  if (stat(CAMP_1103_HACK_CONF, &hack_conf_stat) == 0) {
+    if (mapping_create_table(CAMP_1103_HACK_CONF) == -1) {
+      errx(EXIT_FAILURE, "mapping table creation for camp-1103 failed.");
+    }
+  }
+#endif
 
   /*
    * Install necessary route entries based on the mapping table
