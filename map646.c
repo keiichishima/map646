@@ -34,6 +34,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #if defined(CAMP_1103_HACK)
+#define CAMP_1103_HACK_CONF "/etc/map646-soi.conf"
 #include <sys/stat.h>
 #endif
 
@@ -97,7 +98,6 @@ main(int argc, char *argv[])
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 #if defined(CAMP_1103_HACK)
-#define CAMP_1103_HACK_CONF "/etc/map646-camp-1103.conf"
   struct stat hack_conf_stat;
   memset(&hack_conf_stat, 0, sizeof(struct stat));
   if (stat(CAMP_1103_HACK_CONF, &hack_conf_stat) == 0) {
@@ -205,7 +205,6 @@ reload_sighup(int dummy)
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 #if defined(CAMP_1103_HACK)
-#define CAMP_1103_HACK_CONF "/etc/map646-camp-1103.conf"
   struct stat hack_conf_stat;
   memset(&hack_conf_stat, 0, sizeof(struct stat));
   if (stat(CAMP_1103_HACK_CONF, &hack_conf_stat) == 0) {
