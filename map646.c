@@ -90,7 +90,7 @@ main(int argc, char *argv[])
   }
 
   /* Create mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path) == -1) {
+  if (mapping_create_table(map646_conf_path, 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 
@@ -188,7 +188,7 @@ reload_sighup(int dummy)
   mapping_destroy_table();
 
   /* Create a new mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path) == -1) {
+  if (mapping_create_table(map646_conf_path, 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 

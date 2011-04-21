@@ -35,6 +35,7 @@
 
 #include <sys/queue.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -95,9 +96,13 @@ mapping_initialize(void)
  * struct mapping{} structure, and stored as SLIST entries.
  */
 int
-mapping_create_table(const char *map646_conf_path)
+mapping_create_table(const char *map646_conf_path, int depth)
 {
   assert(map646_conf_path != NULL);
+
+  if (depth > 10) {
+    err(EXIT_FAILURE, "too many recursive include.");
+  }
 
   FILE *conf_fp;
   char *line;
@@ -114,29 +119,41 @@ mapping_create_table(const char *map646_conf_path)
   int line_count = 0;
   while (getline(&line, &line_cap, conf_fp) > 0) {
     line_count++;
-    if (sscanf(line, "%255s %255s %255s", op, addr1, addr2) == -1) {
-      warn("line %d: syntax error.", line_count);
+    if (strncmp(line, "\n", 1) == 0) {
+      /* empty line. */
+      continue;
     }
-    if (strcmp(op, "map-static") == 0) {
+
+    if (sscanf(line, "%255s %255s %255s", op, addr1, addr2) == -1) {
+      warn("line %d (%s): syntax error.", line_count, map646_conf_path);
+    }
+    if (strncmp(op, "#", 1) == 0) {
+      /* comment line. */
+      continue;
+    } else if (strcmp(op, "map-static") == 0) {
       struct mapping *mappingp;
       mappingp = (struct mapping *)malloc(sizeof(struct mapping));
       if (inet_pton(AF_INET, addr1, &mappingp->addr4) != 1) {
-	warn("line %d: invalid address %s.", line_count, addr1);
+	warn("line %d (%s): invalid address %s.", line_count,
+	     map646_conf_path, addr1);
 	free(mappingp);
 	continue;
       }
       if (mapping_find_mapping_with_ip4_addr(&mappingp->addr4)) {
-	warnx("line %d: duplicate entry for addrss %s.", line_count, addr1);
+	warnx("line %d (%s): duplicate entry for addrss %s.",
+	      line_count, map646_conf_path, addr1);
 	free(mappingp);
 	continue;
       }
       if (inet_pton(AF_INET6, addr2, &mappingp->addr6) != 1) {
-	warn("line %d: invalid address %s.", line_count, addr1);
+	warn("line %d (%s): invalid address %s.", line_count,
+	     map646_conf_path, addr1);
 	free(mappingp);
 	continue;
       }
       if (mapping_find_mapping_with_ip6_addr(&mappingp->addr6)) {
-	warnx("line %d: duplicate entry for addrss %s.", line_count, addr2);
+	warnx("line %d (%s): duplicate entry for addrss %s.",
+	      line_count, map646_conf_path, addr2);
 	free(mappingp);
 	continue;
       }
@@ -145,10 +162,21 @@ mapping_create_table(const char *map646_conf_path)
       }
     } else if (strcmp(op, "mapping-prefix") == 0) {
       if (inet_pton(AF_INET6, addr1, &mapping_prefix) != 1) {
-	warn("line %d: invalid address %s.\n", line_count, addr1);
+	warn("line %d (%s): invalid address %s.\n", line_count,
+	     map646_conf_path, addr1);
+      }
+    } else if (strcmp(op, "include") == 0) {
+      struct stat sub_conf_stat;
+      memset(&sub_conf_stat, 0, sizeof(struct stat));
+      if (stat(addr1, &sub_conf_stat) == 0) {
+	if (mapping_create_table(addr1, depth + 1) == -1) {
+	  errx(EXIT_FAILURE, "mapping table creation from %s failed.",
+	       addr1);
+	}
       }
     } else {
-      warnx("line %d: unknown operand %s.\n", line_count, op);
+      warnx("line %d (%s): unknown operand %s.\n", line_count,
+	    map646_conf_path, op);
     }
   }
 
