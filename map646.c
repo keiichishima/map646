@@ -104,17 +104,12 @@ main(int argc, char *argv[])
     errx(EXIT_FAILURE, "cannot open a tun internface %s.", tun_if_name);
   }
 
-  /* Create mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path) == -1) {
-    errx(EXIT_FAILURE, "mapping table creation failed.");
-  }
-
   /*
    * Install necessary route entries based on the mapping table
    * information.
    */
   /*
-   * What mapping_install_route() was doing is marged to 
+   * What mapping_install_route() should do for 6to6 NAT is done in 
    * mapping_create_table(). this implementation is not good.
    * so better to be improved.
    */
