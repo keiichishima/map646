@@ -22,6 +22,7 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
@@ -41,8 +42,10 @@
 #if defined(__linux__)
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <linux/fib_rules.h>
 #include <linux/if_tun.h>
 #include <linux/if_ether.h>
+#include <arpa/inet.h>
 #else
 #include <ifaddrs.h>
 #include <net/route.h>
@@ -51,9 +54,12 @@
 #endif
 #include <netinet/in.h>
 
+#define POLICY_TABLE_ID 1
+
 char tun_if_name[IFNAMSIZ];
 
-static int tun_op_route(int, int, const void *, int);
+static int tun_op_route(int, int, const void *, int, int);
+static int tun_op_rule(int op, int af, const void *addr, int prefix_len, int rt_class);
 
 /*
  * Create a new tun interface with the given name.  If the name
@@ -263,14 +269,39 @@ tun_set_af(void *buf, uint32_t af)
 int
 tun_add_route(int af, const void *addr, int prefix_len)
 {
-  return (tun_op_route(RTM_NEWROUTE, af, addr, prefix_len));
+  return (tun_op_route(RTM_NEWROUTE, af, addr, prefix_len, RT_TABLE_MAIN));
 }
-
 /* The deletion procedure of a route entry for Linux. */
 int
 tun_delete_route(int af, const void *addr, int prefix_len)
 {
-  return (tun_op_route(RTM_DELROUTE, af, addr, prefix_len));
+  return (tun_op_route(RTM_DELROUTE, af, addr, prefix_len, RT_TABLE_MAIN));
+}
+
+/* The creation procedure of a policy-based table for Linux */
+int
+tun_create_policy_table()
+{
+   struct in6_addr addr;
+   int prefix_len = 0; 
+   inet_pton(AF_INET6, "0::", &addr);
+   return (tun_op_route(RTM_NEWROUTE, AF_INET6, &addr, prefix_len, POLICY_TABLE_ID));
+}
+
+/* The addition procedure of a policy-based routing for Linux. */
+int
+tun_add_policy(int af, const void *addr, int prefix_len) 
+{
+   warnx("add_policy");
+   return tun_op_rule(RTM_NEWRULE, AF_INET6, addr, prefix_len, POLICY_TABLE_ID);
+}
+
+/* The deletion procedure of a policy for Linux */
+int 
+tun_delete_policy()
+{
+   int prefix_len = 0;
+   return tun_op_rule(RTM_DELRULE, AF_INET6, NULL, prefix_len, POLICY_TABLE_ID);
 }
 
 /* Stub routine for route addition/deletion. */
@@ -283,12 +314,12 @@ struct inet_prefix {
 };
 
 static int
-tun_op_route(int op, int af, const void *addr, int prefix_len)
+tun_op_route(int op, int af, const void *addr, int prefix_len, int rt_class)
 {
   assert(op == RTM_NEWROUTE
 	 || op == RTM_DELROUTE);
   assert(addr != NULL);
-  assert(prefix_len > 0);
+  assert(prefix_len >= 0);
 
   struct {
     struct nlmsghdr m_nlmsghdr;
@@ -300,7 +331,7 @@ tun_op_route(int op, int af, const void *addr, int prefix_len)
   m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
   m_nlmsg.m_nlmsghdr.nlmsg_type = op;
   m_nlmsg.m_rtmsg.rtm_family = af;
-  m_nlmsg.m_rtmsg.rtm_table = RT_TABLE_MAIN;
+  m_nlmsg.m_rtmsg.rtm_table = rt_class;
   switch (op) {
   case RTM_NEWROUTE:
     m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
@@ -409,6 +440,128 @@ tun_op_route(int op, int af, const void *addr, int prefix_len)
   close (netlink_fd);
 
   return (0);
+}
+
+static int
+tun_op_rule(int op, int af, const void *addr, int prefix_len, int rt_class)
+{
+   assert(op == RTM_NEWRULE
+         || op == RTM_DELRULE);
+   if(op == RTM_NEWRULE)
+      assert(addr != NULL);
+   assert(prefix_len >= 0);
+
+   struct {
+      struct nlmsghdr m_nlmsghdr;
+      struct rtmsg m_rtmsg;
+      char m_space[1024];
+   } m_nlmsg;
+
+   memset(&m_nlmsg, 0, sizeof(m_nlmsg));
+   m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+   m_nlmsg.m_nlmsghdr.nlmsg_type = op;
+   m_nlmsg.m_rtmsg.rtm_family = af;
+   m_nlmsg.m_rtmsg.rtm_table = rt_class;
+   m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+
+   switch (op) {
+      case RTM_NEWRULE:
+         m_nlmsg.m_rtmsg.rtm_protocol = RTPROT_BOOT;
+         m_nlmsg.m_nlmsghdr.nlmsg_flags |= NLM_F_CREATE|NLM_F_EXCL;
+         m_nlmsg.m_rtmsg.rtm_type = RTN_UNICAST;
+         m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_UNIVERSE;
+         break;
+
+      case RTM_DELRULE:
+         m_nlmsg.m_rtmsg.rtm_protocol = RTPROT_BOOT;
+         m_nlmsg.m_rtmsg.rtm_type = RTN_UNSPEC;
+         m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_UNIVERSE;
+         break;
+
+      default:
+         /* Never reached.  All other operations will be asserted. */
+         break;
+   }
+
+   if(addr != NULL){
+
+   /* construct the destination address information. */
+   struct inet_prefix dst;
+   memset(&dst, 0, sizeof(struct inet_prefix));
+   dst.family = af;
+   switch (dst.family) {
+      case AF_INET:
+         dst.bytelen = 4;
+         dst.bitlen = prefix_len;
+         if (prefix_len < 32) {
+            dst.flags = 0x1; /* means that the prefix length is specified. */
+         }
+         memcpy(dst.data, addr, sizeof(struct in_addr));
+         break;
+
+      case AF_INET6:
+         dst.bytelen = 16;
+         dst.bitlen = prefix_len;
+         if (prefix_len < 128) {
+            dst.flags = 0x1; /* means that the prefix length is specified. */
+         }
+         memcpy(dst.data, addr, sizeof(struct in6_addr));
+         break;
+
+      default:
+         warnx("unsupported address family %d.", af);
+         return (-1);
+   }
+
+   struct rtattr *rta;
+   int rta_value_len;
+   /* Copy the destination address information to the rtmsg structure. */
+   m_nlmsg.m_rtmsg.rtm_src_len = dst.bitlen;
+   rta_value_len = RTA_LENGTH(dst.bytelen);
+   if (NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len) + RTA_ALIGN(rta_value_len)
+         > sizeof(m_nlmsg)) {
+      errx(EXIT_FAILURE, "message must be smaller than %zd.", sizeof(m_nlmsg));
+   }
+   rta = (struct rtattr *)(((void *)(&m_nlmsg.m_nlmsghdr))
+         + NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len));
+   rta->rta_type = FRA_SRC;
+   rta->rta_len = rta_value_len;
+   memcpy(RTA_DATA(rta), dst.data, dst.bytelen);
+   m_nlmsg.m_nlmsghdr.nlmsg_len = NLMSG_ALIGN(m_nlmsg.m_nlmsghdr.nlmsg_len)
+      + RTA_ALIGN(rta_value_len);
+   
+   }
+
+   int netlink_fd;
+   netlink_fd = socket(AF_NETLINK, SOCK_RAW, 0);
+   if (netlink_fd == -1) {
+      err(EXIT_FAILURE, "cannot open a netlink socket.");
+   }
+
+   struct iovec iov = {
+      .iov_base = (void *)&m_nlmsg.m_nlmsghdr,
+      .iov_len = m_nlmsg.m_nlmsghdr.nlmsg_len
+   };
+   struct sockaddr_nl so_nl;
+   struct msghdr msg = {
+      .msg_name = &so_nl,
+      .msg_namelen = sizeof(struct sockaddr_nl),
+      .msg_iov = &iov,
+      .msg_iovlen = 1
+   };
+   memset(&so_nl, 0, sizeof(struct sockaddr_nl));
+   so_nl.nl_family = AF_NETLINK;
+   static int seq = 0;
+   m_nlmsg.m_nlmsghdr.nlmsg_seq = ++seq;
+   ssize_t write_len;
+   write_len = sendmsg(netlink_fd, &msg, 0);
+   if (write_len == -1) {
+      err(EXIT_FAILURE, "failed to write to a netlink socket.");
+   }
+
+   close (netlink_fd);
+
+   return (0);
 }
 #else
 /* The addition procedure of a route entry for BSD. */

@@ -25,7 +25,7 @@
 #ifndef __TUNIF_H__
 #define __TUNIF_H__
 
-#define TUN_DEFAULT_IF_NAME "tun646"
+#define TUN_DEFAULT_IF_NAME "nat66"
 
 extern char tun_if_name[];
 
@@ -36,7 +36,10 @@ int tun_dealloc(const char *);
 uint32_t tun_get_af(const void *);
 int tun_set_af(void *, uint32_t);
 int tun_add_route(int, const void *, int);
+int tun_add_policy(int, const void *, int);
+int tun_create_policy_table();
 int tun_delete_route(int, const void *, int);
+int tun_delete_policy();
 
 #endif
 
