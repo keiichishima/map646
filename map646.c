@@ -33,6 +33,10 @@
 #include <sys/uio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#if defined(WCC_MIGRATION)
+#define SOI_CONF "/etc/map646-soi.conf"
+#include <sys/stat.h>
+#endif
 
 #include <net/if.h>
 
@@ -93,6 +97,15 @@ main(int argc, char *argv[])
   if (mapping_create_table(map646_conf_path, 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
+#if defined(WCC_MIGRATION)
+  struct stat hack_conf_stat;
+  memset(&hack_conf_stat, 0, sizeof(struct stat));
+  if (stat(SOI_CONF, &hack_conf_stat) == 0) {
+    if (mapping_create_table(SOI_CONF, 0) == -1) {
+      errx(EXIT_FAILURE, "mapping table creation for SOI failed.");
+    }
+  }
+#endif
 
   /* Create a tun interface. */
   tun_fd = -1;
@@ -191,6 +204,15 @@ reload_sighup(int dummy)
   if (mapping_create_table(map646_conf_path, 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
+#if defined(WCC_MIGRATION)
+  struct stat hack_conf_stat;
+  memset(&hack_conf_stat, 0, sizeof(struct stat));
+  if (stat(SOI_CONF, &hack_conf_stat) == 0) {
+    if (mapping_create_table(SOI_CONF, 0) == -1) {
+      errx(EXIT_FAILURE, "mapping table creation for SOI failed.");
+    }
+  }
+#endif
 
   /*
    * Install necessary route entries based on the mapping table
