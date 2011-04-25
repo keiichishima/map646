@@ -91,10 +91,6 @@ main(int argc, char *argv[])
     err(EXIT_FAILURE, "failed to register a SIGHUP hook.");
   }
 
-  /* Create mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path, 0) == -1) {
-    errx(EXIT_FAILURE, "mapping table creation failed.");
-  }
 
   /* Create a tun interface. */
   tun_fd = -1;
@@ -104,6 +100,11 @@ main(int argc, char *argv[])
     errx(EXIT_FAILURE, "cannot open a tun internface %s.", tun_if_name);
   }
 
+  /* Create mapping table from the configuraion file. */
+  if (mapping_create_table(map646_conf_path, 0) == -1) {
+    errx(EXIT_FAILURE, "mapping table creation failed.");
+  }
+  
   /*
    * Install necessary route entries based on the mapping table
    * information.
