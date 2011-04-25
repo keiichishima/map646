@@ -91,6 +91,11 @@ main(int argc, char *argv[])
     err(EXIT_FAILURE, "failed to register a SIGHUP hook.");
   }
 
+  /* Create mapping table from the configuraion file. */
+  if (mapping_create_table(map646_conf_path, 0) == -1) {
+    errx(EXIT_FAILURE, "mapping table creation failed.");
+  }
+
   /* Create a tun interface. */
   tun_fd = -1;
   strncpy(tun_if_name, TUN_DEFAULT_IF_NAME, IFNAMSIZ);
@@ -200,7 +205,7 @@ reload_sighup(int dummy)
   mapping_destroy_table();
 
   /* Create a new mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path) == -1) {
+  if (mapping_create_table(map646_conf_path, 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 
