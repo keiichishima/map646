@@ -226,20 +226,20 @@ mapping_create_table(const char *map646_conf_path, int depth)
          if (inet_pton(AF_INET6, addr1, &mapping_prefix) != 1) {
             warn("line %d: invalid address %s.\n", line_count, addr1);
          }
-      } else if (strcmp(op, "mapping66-addr") == 0) {
-         if (inet_pton(AF_INET6, addr1, &mapping66_addr) != 1) {
-            warn("line %d: invalid address %s.\n", line_count, addr1);
-         }
-         /*
-          * what mapping_install_route() was doing
-          * better to change this implementaion
-          */
-         if (tun_add_route(AF_INET6, &mapping66_addr, 64) == -1) {
-            char addr_name[64];
-            warnx("IPv6 pseudo mapping prefix %s route entry addition failed.",
-                  inet_ntop(AF_INET6, &mapping66_addr, addr_name, 64));
-            return (-1);
-         }
+//      } else if (strcmp(op, "mapping66-addr") == 0) {
+//         if (inet_pton(AF_INET6, addr1, &mapping66_addr) != 1) {
+//            warn("line %d: invalid address %s.\n", line_count, addr1);
+//         }
+//         /*
+//          * what mapping_install_route() was doing
+//          * better to change this implementaion
+//          */
+//         if (tun_add_route(AF_INET6, &mapping66_addr, 64) == -1) {
+//            char addr_name[64];
+//            warnx("IPv6 pseudo mapping prefix %s route entry addition failed.",
+//                  inet_ntop(AF_INET6, &mapping66_addr, addr_name, 64));
+//            return (-1);
+//         }
       } else if (strcmp(op, "include") == 0) {
          struct stat sub_conf_stat;
          memset(&sub_conf_stat, 0, sizeof(struct stat));
