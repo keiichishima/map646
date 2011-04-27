@@ -57,9 +57,11 @@
 			local interfaces used to transmit actual
 			packets. */
 
+
 static int send_4to6(void *, size_t);
 static int send_6to4(void *, size_t);
-
+static int send_6to6(void *, size_t);
+static int send_6(void *, size_t);
 void cleanup_sigint(int);
 void cleanup(void);
 void reload_sighup(int);
@@ -89,10 +91,6 @@ main(int argc, char *argv[])
     err(EXIT_FAILURE, "failed to register a SIGHUP hook.");
   }
 
-  /* Create mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path, 0) == -1) {
-    errx(EXIT_FAILURE, "mapping table creation failed.");
-  }
 
   /* Create a tun interface. */
   tun_fd = -1;
@@ -102,9 +100,19 @@ main(int argc, char *argv[])
     errx(EXIT_FAILURE, "cannot open a tun internface %s.", tun_if_name);
   }
 
+  /* Create mapping table from the configuraion file. */
+  if (mapping_create_table(map646_conf_path, 0) == -1) {
+    errx(EXIT_FAILURE, "mapping table creation failed.");
+  }
+  
   /*
    * Install necessary route entries based on the mapping table
    * information.
+   */
+  /*
+   * What mapping_install_route() should do for 6to6 NAT is done in 
+   * mapping_create_table(). this implementation is not good.
+   * so better to be improved.
    */
   if (mapping_install_route() == -1) {
     errx(EXIT_FAILURE, "failed to install mapped route information.");
@@ -127,7 +135,9 @@ main(int argc, char *argv[])
       send_4to6(bufp, (size_t)read_len);
       break;
     case AF_INET6:
-      send_6to4(bufp, (size_t)read_len);
+      send_6(bufp, (size_t)read_len);
+//      send_6to6(bufp, (size_t)read_len);
+//      send_6to4(bufp, (size_t)read_len);
       break;
     default:
       warnx("unsupported address family %d is received.", af);
@@ -137,8 +147,12 @@ main(int argc, char *argv[])
    * The program reaches here only when read(2) fails in the above
    * while loop.  This happens when a user type Ctrl-C too.
    */
+  if (mapping_uninstall_route() == -1) {
+    warnx("failed to uninstall route entries created before.  should we continue?");
+  }
   err(EXIT_FAILURE, "read from tun failed.");
 }
+
 
 /*
  * The clenaup routine called when SIGINT is received, typically when
@@ -849,3 +863,176 @@ send_6to4(void *datap, size_t data_len)
 
   return (0);
 }
+
+
+/*
+ * Convert an IPv6 packet given as the argument to an IPv6 packet, and
+ * send it.
+ */
+   static int
+send_6to6(void *datap, size_t data_len)
+{
+   assert(datap != NULL);
+
+   char *packetp = datap;
+
+   /* Analyze IPv6 header contents. */
+   struct ip6_hdr *ip6_hdrp;
+   uint8_t ip6_next_header;
+   ip6_hdrp = (struct ip6_hdr *)packetp;
+   ip6_next_header = ip6_hdrp->ip6_nxt;
+   packetp += sizeof(struct ip6_hdr);
+
+   /* ICMPv6 error handling. */
+   /* XXX: we don't handle fragmented ICMPv6 messages. */
+   if (ip6_next_header == IPPROTO_ICMPV6) {
+      int discard_ok = 0;
+      if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
+               data_len - ((void *)packetp - datap),
+               &discard_ok)
+            == -1) {
+         return (0);
+      }
+      if (discard_ok)
+         return (0);
+   }
+
+   /* Fragment header check. */
+   struct ip6_frag *ip6_frag_hdrp = NULL;
+   int ip6_more_frag = 0;
+   int ip6_offset = 0;
+   int ip6_id = 0;
+   if (ip6_next_header == IPPROTO_FRAGMENT) {
+      ip6_frag_hdrp = (struct ip6_frag *)packetp;
+      ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
+      ip6_more_frag = ip6_frag_hdrp->ip6f_offlg & IP6F_MORE_FRAG;
+      ip6_offset = ntohs(ip6_frag_hdrp->ip6f_offlg & IP6F_OFF_MASK);
+      ip6_id = ntohl(ip6_frag_hdrp->ip6f_ident);
+      packetp += sizeof(struct ip6_frag);
+   }
+
+   /*
+    * Next header check: Currently, any kinds of extension headers other
+    * than the Fragment header are not supported and just dropped.
+    */
+   if (ip6_next_header != IPPROTO_ICMPV6
+         && ip6_next_header != IPPROTO_TCP
+         && ip6_next_header != IPPROTO_UDP) {
+      warnx("Extention header %d is not supported.", ip6_next_header);
+      return (0);
+   }
+
+   /* Get some basic IPv6 header values. */
+   struct in6_addr ip6_before_src, ip6_before_dst;
+   uint16_t ip6_payload_len;
+   uint8_t ip6_hop_limit;
+   memcpy((void *)&ip6_before_src, (const void *)&ip6_hdrp->ip6_src,
+         sizeof(struct in6_addr));
+   memcpy((void *)&ip6_before_dst, (const void *)&ip6_hdrp->ip6_dst,
+         sizeof(struct in6_addr));
+   ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
+   if (ip6_frag_hdrp != NULL) {
+      ip6_payload_len -= sizeof(struct ip6_frag);
+   }
+   ip6_hop_limit = ip6_hdrp->ip6_hlim;
+
+   /* Check the packet size. */
+   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
+      /* Data is too short.  Drop it. */
+      warnx("Insufficient data supplied (%ld), while IP header says (%ld)",
+            data_len, ip6_payload_len + sizeof(struct ip6_hdr));
+      return (-1);
+   }
+
+#ifdef DEBUG
+   char addr_name[64];
+   fprintf(stderr, "src = %s\n",
+         inet_ntop(AF_INET6, &ip6_before_src, addr_name, 64));
+   fprintf(stderr, "dst = %s\n",
+         inet_ntop(AF_INET6, &ip6_before_dst, addr_name, 64));
+   fprintf(stderr, "plen = %d\n", ip6_payload_len);
+   fprintf(stderr, "nxt = %d\n", ip6_next_header);
+   fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
+#endif
+
+   /* Convert IP addresses. */
+   struct in6_addr ip6_after_src, ip6_after_dst;
+   if (mapping66_convert_addrs_6to6(&ip6_before_src, &ip6_before_dst,
+            &ip6_after_src, &ip6_after_dst) == -1) {
+      warnx("no mapping available. packet is dropped.");
+      return (-1);
+   }
+
+   /* Prepare an IPv6 header template. */
+   struct ip6_hdr ip6_hdr;
+   memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
+   ip6_hdr.ip6_vfc = IPV6_VERSION;
+   ip6_hdr.ip6_plen = ip6_hdrp->ip6_plen;
+   ip6_hdr.ip6_nxt = ip6_next_header;
+   ip6_hdr.ip6_hlim = ip6_hop_limit;
+   memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_after_src,
+         sizeof(struct in6_addr));
+   memcpy((void *)&ip6_hdr.ip6_dst, (const void *)&ip6_after_dst,
+         sizeof(struct in6_addr));
+
+#ifdef DEBUG
+  fprintf(stderr, "to src = %s\n",
+	  inet_ntop(AF_INET6, &ip6_after_src, addr_name, 64));
+  fprintf(stderr, "to dst = %s\n",
+	  inet_ntop(AF_INET6, &ip6_after_dst, addr_name, 64));
+  fprintf(stderr, "plen = %d\n", ntohs(ip6_hdr.ip6_plen));
+#endif
+
+   struct iovec iov[4];
+   uint32_t af;
+
+   tun_set_af(&af, AF_INET6);
+   iov[0].iov_base = &af;
+   iov[0].iov_len = sizeof(uint32_t);
+   iov[1].iov_base = &ip6_hdr;
+   iov[1].iov_len = sizeof(struct ip6_hdr);
+   iov[2].iov_base = NULL;
+   iov[2].iov_len = 0;
+   iov[3].iov_base = packetp;
+   iov[3].iov_len = ip6_payload_len;
+
+   cksum66_update_ulp(ip6_hdr.ip6_nxt, ip6_hdrp, iov);
+   
+   ssize_t write_len;
+   write_len = writev(tun_fd, iov, 4);
+   if (write_len == -1) {
+      warn("sending an IPv6 packet failed.");
+   }
+
+   return (0);
+}
+
+static int
+send_6(void *datap, size_t data_len)
+{
+  assert(datap != NULL);
+  char *packetp = datap;
+  /* Analyze IPv6 header contents. */
+  struct ip6_hdr *ip6_hdrp;
+  ip6_hdrp = (struct ip6_hdr *)packetp;
+  /* Get some basic IPv6 header values. */
+  struct in6_addr ip6_src, ip6_dst;
+  memcpy((void *)&ip6_src, (const void *)&ip6_hdrp->ip6_src,
+	 sizeof(struct in6_addr));
+  memcpy((void *)&ip6_dst, (const void *)&ip6_hdrp->ip6_dst,
+	 sizeof(struct in6_addr));
+
+   uint32_t d = 0;
+   d = dispatch_6(&ip6_src, &ip6_dst);
+   switch(d){
+      case SIXTOSIX:
+         send_6to6(datap, data_len);
+         break;
+      case SIXTOFOUR:
+         send_6to4(datap, data_len);
+         break;
+   }
+
+   return 0;
+}
+

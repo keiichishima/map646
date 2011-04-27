@@ -139,6 +139,99 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
     udp_hdrp = iov[3].iov_base;
     sum = udp_hdrp->uh_sum;
     sum = ~sum & 0xffff;
+    sum += cksum_acc_ip_pheader_wo_payload_len(iov[1].iov_base);
+    ADDCARRY(sum);
+    udp_hdrp->uh_sum = ~sum & 0xffff;
+    break;
+#if defined(__linux__)
+#undef th_sum
+#undef uh_sum
+#endif
+
+  default:
+    warnx("unsupported upper layer protocol %d.", ulp);
+    return (-1);
+  }
+
+  return (0);
+}
+
+/*
+ * Adjust the transport layer checksum value based on the difference
+ * between the incoming IP header and the outgoing IP header values,
+ * and update the checksum field appropriately.
+ *
+ * The ulp parameter contains the transport protocol number.  The
+ * orig_ip_hdrp parameter points the incoming IP header. The iov
+ * parameter contains the following information.
+ *
+ * iov[0]: Address family (uint32_t), or struct tun_pi{}
+ * iov[1]: IPv4/IPv6 header
+ * iov[2]: IPv6 Fragment header (if necessary, otherwise NULL)
+ * iov[3]: Upper layer protocol data (at least, a header must exist)
+ */
+int
+cksum66_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
+{
+  assert(orig_ip_hdrp != NULL);
+  assert(iov != NULL);
+  assert(iov[0].iov_base != NULL);
+  assert(iov[1].iov_base != NULL);
+  assert(iov[3].iov_base != NULL);
+
+  struct tcphdr *tcp_hdrp;
+  struct udphdr *udp_hdrp;
+  struct icmp *icmp_hdrp;
+  struct icmp6_hdr *icmp6_hdrp;
+  int32_t sum;
+  switch (ulp) {
+  case IPPROTO_ICMP:
+    icmp_hdrp = iov[3].iov_base;
+    sum = icmp_hdrp->icmp_cksum;
+    sum = ~sum & 0xffff;
+    sum -= cksum_acc_ip_pheader(orig_ip_hdrp);
+    /*
+     * ICMPv6 includes the sum of the pseudo IPv6 header in its
+     * checksum calculation, but ICMP doesn't.  We just subtract the
+     * original pseudo IPv6 header sum from the checksum value.
+     */
+    ADDCARRY(sum);
+    icmp_hdrp->icmp_cksum = ~sum & 0xffff;
+    break;
+
+  case IPPROTO_ICMPV6:
+    icmp6_hdrp = iov[3].iov_base;
+    sum = icmp6_hdrp->icmp6_cksum;
+    sum = ~sum & 0xffff;
+    sum -= cksum_acc_ip_pheader(orig_ip_hdrp);
+    sum += cksum_acc_ip_pheader(iov[1].iov_base);
+    /*
+     * Similar to the ICMP case above, we just add the new pseudo IPv6
+     * header sum to the checksum value, since the original ICMP
+     * checksum doesn't include the IP pseudo header sum.
+     */
+    ADDCARRY(sum);
+    icmp6_hdrp->icmp6_cksum = ~sum & 0xffff;
+    break;
+
+#if defined(__linux__)
+#define th_sum check
+#define uh_sum check
+#endif
+  case IPPROTO_TCP:
+    tcp_hdrp = iov[3].iov_base;
+    sum = tcp_hdrp->th_sum;
+    sum = ~sum & 0xffff;
+    sum -= cksum_acc_ip_pheader_wo_payload_len(orig_ip_hdrp);
+    sum += cksum_acc_ip_pheader_wo_payload_len(iov[1].iov_base);
+    ADDCARRY(sum);
+    tcp_hdrp->th_sum = ~sum & 0xffff;
+    break;
+
+  case IPPROTO_UDP:
+    udp_hdrp = iov[3].iov_base;
+    sum = udp_hdrp->uh_sum;
+    sum = ~sum & 0xffff;
     sum -= cksum_acc_ip_pheader_wo_payload_len(orig_ip_hdrp);
     sum += cksum_acc_ip_pheader_wo_payload_len(iov[1].iov_base);
     ADDCARRY(sum);
