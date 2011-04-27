@@ -763,16 +763,10 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
 int dispatch_6(const struct in6_addr* src, const struct in6_addr* dst){
    const struct mapping66 *src_mappingp
       = mapping66_find_mapping_with_ip6_addr(src);
-   const struct mapping66 *dst_mappingp
-      = mapping66_find_mapping_with_ip6_addr(dst);
-   const struct mapping *mappingp
-      = mapping_find_mapping_with_ip6_addr(src);
-   if(!src_mappingp && dst_mappingp && !mappingp){
+   
+   if(!src_mappingp){
       return SIXTOSIX;
-   }else if((src_mappingp || mappingp)&& !dst_mappingp){
-      /*
-       * Look up dst's prefix, if it matches to imaginal prefix packet is for 6to4
-       */
+   }else{
       if(memcmp(dst, &mapping_prefix, 8) == 0)
          return SIXTOFOUR;
       else
