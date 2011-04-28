@@ -759,9 +759,11 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
 }
 
 int dispatch_6(const struct in6_addr* src, const struct in6_addr* dst){
-   const struct mapping66 *src_mappingp
+   const struct mapping66 *mapping66p
       = mapping66_find_mapping_with_I_addr(src);
-   if(!src_mappingp){
+   const struct mapping *mappingp
+      = mapping_find_mapping_with_ip6_addr(src);
+   if(!mapping66p && !mappingp){
       return SIXTOSIX_GtoI;
    }else{
       if(memcmp(dst, &mapping_prefix, 8) == 0)
