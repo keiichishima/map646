@@ -55,8 +55,8 @@ struct mapping {
 
 struct mapping66 {
    SLIST_ENTRY(mapping66) entries;
-   struct in6_addr addr6_1;
-   struct in6_addr addr6_2;
+   struct in6_addr global;
+   struct in6_addr intra;
 };
 
 struct mapping_hash {
@@ -81,17 +81,22 @@ SLIST_HEAD(mapping66_hash_listhead, mapping66_hash);
 
 struct mapping_hash_listhead mapping_hash_4to6_heads[MAPPING_TABLE_HASH_SIZE];
 struct mapping_hash_listhead mapping_hash_6to4_heads[MAPPING_TABLE_HASH_SIZE];
-struct mapping66_hash_listhead mapping66_hash_6to6_heads[MAPPING_TABLE_HASH_SIZE];
+
+//hashtable for a packet from Intra to Global
+struct mapping66_hash_listhead mapping66_hash_ItoG_heads[MAPPING_TABLE_HASH_SIZE];
+//hashtable for a packet from Global to Intra 
+struct mapping66_hash_listhead mapping66_hash_GtoI_heads[MAPPING_TABLE_HASH_SIZE];
 
 static struct in6_addr mapping_prefix;
-static struct in6_addr mapping66_addr;
 
 static int mapping_get_hash_index(const void *, int);
 static const struct mapping *mapping_find_mapping_with_ip4_addr(const struct
       in_addr *);
 static const struct mapping *mapping_find_mapping_with_ip6_addr(const struct
       in6_addr *);
-static const struct mapping66 *mapping66_find_mapping_with_ip6_addr(const struct
+static const struct mapping66 *mapping66_find_mapping_with_I_addr(const struct
+      in6_addr *);
+static const struct mapping66 *mapping66_find_mapping_with_G_addr(const struct
       in6_addr *);
 
 static int mapping_insert_mapping(struct mapping *);
@@ -110,7 +115,8 @@ mapping_initialize(void)
    while (count--) {
       SLIST_INIT(&mapping_hash_4to6_heads[count]);
       SLIST_INIT(&mapping_hash_6to4_heads[count]);
-      SLIST_INIT(&mapping66_hash_6to6_heads[count]);
+      SLIST_INIT(&mapping66_hash_ItoG_heads[count]);
+      SLIST_INIT(&mapping66_hash_GtoI_heads[count]);
    }
 
    return (0);
@@ -121,12 +127,6 @@ mapping_initialize(void)
  * variable.  Each mapping entry is converted to the form of the
  * struct mapping{} structure, and stored as SLIST entries.
  */
-/*
- * Besides the original function, added what mapping_install_route()
- * was doing due to bad design. This implementation is better to be 
- * changed.
- */
-
    int
 mapping_create_table(const char *map646_conf_path, int depth)
 {
@@ -145,11 +145,6 @@ mapping_create_table(const char *map646_conf_path, int depth)
    if (conf_fp == NULL) {
       err(EXIT_FAILURE, "opening a configuration file %s failed.",
             map646_conf_path);
-   }
-
-   if(tun_create_policy_table() == -1){
-      warnx("failed to create policy table");
-      return(-1);
    }
 
    int line_count = 0;
@@ -188,58 +183,33 @@ mapping_create_table(const char *map646_conf_path, int depth)
       } else if (strcmp(op, "map66-static") == 0) {
          struct mapping66 *mappingp;
          mappingp = (struct mapping66 *)malloc(sizeof(struct mapping66));
-         if (inet_pton(AF_INET6, addr1, &mappingp->addr6_1) != 1) {
+         if (inet_pton(AF_INET6, addr1, &mappingp->global) != 1) {
             warn("line %d: invalid address %s.", line_count, addr1);
             free(mappingp);
             continue;
          }
-         if (mapping66_find_mapping_with_ip6_addr(&mappingp->addr6_1)) {
+         if (mapping66_find_mapping_with_G_addr(&mappingp->global)) {
             warnx("line %d: duplicate entry for addrss %s.", line_count, addr1);
             free(mappingp);
             continue;
          }
-         if (inet_pton(AF_INET6, addr2, &mappingp->addr6_2) != 1) {
+         if (inet_pton(AF_INET6, addr2, &mappingp->intra) != 1) {
             warn("line %d: invalid address %s.", line_count, addr2);
             free(mappingp);
             continue;
          }
-         if (mapping66_find_mapping_with_ip6_addr(&mappingp->addr6_2)) {
+         if (mapping66_find_mapping_with_I_addr(&mappingp->intra)) {
             warnx("line %d: duplicate entry for addrss %s.", line_count, addr2);
             free(mappingp);
             continue;
          }
          if (mapping66_insert_mapping(mappingp) == -1) {
             err(EXIT_FAILURE, "inserting a mapping entry failed.");
-         }else{
-            /* 
-             * nasty code. better to change this implementation.
-             * To avoid create two hash table, create a separated array 
-             * for adding policy-based routing rules
-             */
-            if (tun_add_policy(AF_INET6, &mappingp->addr6_2, 128) == -1) {
-               char addr_name[64];
-               warnx("IPv6 host %s policy route entry addition failed.",
-                     inet_ntop(AF_INET6, &mappingp->addr6_2, addr_name, 64));
-            }
          }
       } else if (strcmp(op, "mapping-prefix") == 0) {
          if (inet_pton(AF_INET6, addr1, &mapping_prefix) != 1) {
             warn("line %d: invalid address %s.\n", line_count, addr1);
          }
-//      } else if (strcmp(op, "mapping66-addr") == 0) {
-//         if (inet_pton(AF_INET6, addr1, &mapping66_addr) != 1) {
-//            warn("line %d: invalid address %s.\n", line_count, addr1);
-//         }
-//         /*
-//          * what mapping_install_route() was doing
-//          * better to change this implementaion
-//          */
-//         if (tun_add_route(AF_INET6, &mapping66_addr, 64) == -1) {
-//            char addr_name[64];
-//            warnx("IPv6 pseudo mapping prefix %s route entry addition failed.",
-//                  inet_ntop(AF_INET6, &mapping66_addr, addr_name, 64));
-//            return (-1);
-//         }
       } else if (strcmp(op, "include") == 0) {
          struct stat sub_conf_stat;
          memset(&sub_conf_stat, 0, sizeof(struct stat));
@@ -280,9 +250,15 @@ mapping_destroy_table(void)
          free(mhp);
       }
 
-      while (!SLIST_EMPTY(&mapping66_hash_6to6_heads[count])) {
-         struct mapping66_hash *mhp = SLIST_FIRST(&mapping66_hash_6to6_heads[count]);
-         SLIST_REMOVE_HEAD(&mapping66_hash_6to6_heads[count], entries);
+      while (!SLIST_EMPTY(&mapping66_hash_ItoG_heads[count])) {
+         struct mapping66_hash *mhp = SLIST_FIRST(&mapping66_hash_ItoG_heads[count]);
+         SLIST_REMOVE_HEAD(&mapping66_hash_ItoG_heads[count], entries);
+         free(mhp);
+      }
+      
+      while (!SLIST_EMPTY(&mapping66_hash_GtoI_heads[count])) {
+         struct mapping66_hash *mhp = SLIST_FIRST(&mapping66_hash_GtoI_heads[count]);
+         SLIST_REMOVE_HEAD(&mapping66_hash_GtoI_heads[count], entries);
          free(mhp);
       }
    }
@@ -393,7 +369,7 @@ mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
  * of the incoming packet and the information of the mapping table.
  */
    int
-mapping66_convert_addrs_6to6(const struct in6_addr *ip6_before_src,
+mapping66_convert_addrs_GtoI(const struct in6_addr *ip6_before_src,
       const struct in6_addr *ip6_before_dst,
       struct in6_addr *ip6_after_src,
       struct in6_addr *ip6_after_dst)
@@ -404,45 +380,69 @@ mapping66_convert_addrs_6to6(const struct in6_addr *ip6_before_src,
    assert(ip6_after_dst != NULL);
 
 
-   const struct mapping66 *src_mappingp
-      = mapping66_find_mapping_with_ip6_addr(ip6_before_src);
-   const struct mapping66 *dst_mappingp
-      = mapping66_find_mapping_with_ip6_addr(ip6_before_dst);
+   const struct mapping66 *mappingp
+      = mapping66_find_mapping_with_G_addr(ip6_before_dst);
 
-
-   if(!src_mappingp && dst_mappingp){
+   if(mappingp){
       /* 
        * The packet is from the Internet
        * change dst addr to the corresponding addr
        */
+#ifdef DEBUG
       warnx("from the Internet");
-      memcpy((void *)ip6_after_dst, (const void *)&dst_mappingp->addr6_2, sizeof(struct in6_addr));
+#endif
+      memcpy((void *)ip6_after_dst, (const void *)&mappingp->intra, sizeof(struct in6_addr));
       memcpy((void *)ip6_after_src, (const void *)ip6_before_src, sizeof(struct in6_addr));
-   }else if(src_mappingp && !dst_mappingp){
-      /* 
-       * The packet is from the Intranet
-       * change src addr to the corresponding addr
-       */
-      warnx("from private network");
-      memcpy((void *)ip6_after_src, (const void *)&src_mappingp->addr6_2, sizeof(struct in6_addr));
-      memcpy((void *)ip6_after_dst, (const void *)ip6_before_dst, sizeof(struct in6_addr));
-   }else if(src_mappingp && dst_mappingp){
-      /* 
-       * Ambiguous mapping 
-       */
-      char addr_str1[64], addr_str2[64];
-      warnx("ambiguous mapping: mapping exists from the both side. src: %s, dst: %s",
-            inet_ntop(AF_INET6, ip6_before_src, addr_str1, 64),
-            inet_ntop(AF_INET6, ip6_before_dst, addr_str2, 64));
-      return(-1);
    }else{
       /* 
        * no mapping exists
        */
-      char addr_str1[64], addr_str2[64];
-      warnx("no mapping entry found for %s and %s.",
-            inet_ntop(AF_INET6, ip6_before_src, addr_str1, 64),
-            inet_ntop(AF_INET6, ip6_before_dst, addr_str2, 64));
+      char addr_str[64];
+      warnx("no mapping entry found for %s.",
+            inet_ntop(AF_INET6, ip6_before_dst, addr_str, 64));
+      return (-1);
+   }
+
+   return (0);
+}
+
+/*
+ * Converts IPv6 addresses to corresponding IPv4 addresses, based on
+ * the IPv6 address information (specified as the first 2 arguments)
+ * of the incoming packet and the information of the mapping table.
+ */
+   int
+mapping66_convert_addrs_ItoG(const struct in6_addr *ip6_before_src,
+      const struct in6_addr *ip6_before_dst,
+      struct in6_addr *ip6_after_src,
+      struct in6_addr *ip6_after_dst)
+{
+   assert(ip6_before_src != NULL);
+   assert(ip6_before_dst != NULL);
+   assert(ip6_after_src != NULL);
+   assert(ip6_after_dst != NULL);
+
+
+   const struct mapping66 *mappingp
+      = mapping66_find_mapping_with_I_addr(ip6_before_src);
+
+   if(mappingp){
+      /* 
+       * The packet is from the private network 
+       * change src addr to the corresponding addr
+       */
+#ifdef DEBUG
+      warnx("from private network");
+#endif
+      memcpy((void *)ip6_after_src, (const void *)&mappingp->global, sizeof(struct in6_addr));
+      memcpy((void *)ip6_after_dst, (const void *)ip6_before_dst, sizeof(struct in6_addr));
+   }else{
+      /* 
+       * no mapping exists
+       */
+      char addr_str[64];
+      warnx("no mapping entry found for %s.",
+            inet_ntop(AF_INET6, ip6_before_src, addr_str, 64));
       return (-1);
    }
 
@@ -475,30 +475,20 @@ mapping_install_route(void)
       return (-1);
    }
 
-   /*
-      if(tun_create_policy_table() == -1){
-      warnx("failed to create policy table");
-      return(-1);
-      }
+   if(tun_create_policy_table() == -1){
+   warnx("failed to create policy table");
+   return(-1);
+   }
 
-
-      struct mapping66 *mappingp;
-      SLIST_FOREACH(mappingp, &mapping66_head, entries) {
-      if (tun_add_policy(AF_INET6, &mappingp->addr6_2, 128) == -1) {
-      char addr_name[64];
-      warnx("IPv6 host %s policy route entry addition failed.",
-      inet_ntop(AF_INET6, &mappingp->addr6_2, addr_name, 64));
+   struct mapping66 *mapping66p;
+   SLIST_FOREACH(mapping66p, &mapping66_head, entries) {
+      if (tun_add_policy(AF_INET6, &mapping66p->intra, 128) == -1) {
+         char addr_name[64];
+         warnx("IPv6 host %s policy route entry addition failed.",
+         inet_ntop(AF_INET6, &mapping66p->intra, addr_name, 64));
       }
-      }
+   }
 
-      if (tun_add_route(AF_INET6, &mapping66_addr, 64) == -1) {
-      char addr_name[64];
-      warnx("IPv6 pseudo mapping prefix %s route entry addition failed.",
-      inet_ntop(AF_INET6, &mapping66_addr, addr_name, 64));
-      return (-1);
-      }
-
-    */
    return (0);
 }
 
@@ -523,14 +513,9 @@ mapping_uninstall_route(void)
             inet_ntop(AF_INET6, &mapping_prefix, addr_str, 64));
       return (-1);
    }
+   
    tun_delete_policy();
-   if (tun_delete_route(AF_INET6, &mapping66_addr, 64) == -1) {
-      char addr_str[64];
-      warnx("IPv6 pseudo mapping prefix %s route entry deletion failed.",
-            inet_ntop(AF_INET6, &mapping66_addr, addr_str, 64));
-      return (-1);
-   }
-
+   
    return (0);
 }
 
@@ -612,7 +597,7 @@ mapping_find_mapping_with_ip6_addr(const struct in6_addr *addrp)
  * specified IPv6 address in its mapping information.
  */
    static const struct mapping66 *
-mapping66_find_mapping_with_ip6_addr(const struct in6_addr *addrp)
+mapping66_find_mapping_with_G_addr(const struct in6_addr *addrp)
 {
    assert(addrp != NULL);
 
@@ -620,9 +605,9 @@ mapping66_find_mapping_with_ip6_addr(const struct in6_addr *addrp)
 
    struct mapping66_hash *mapping_hashp = NULL;
    struct mapping66 *mappingp = NULL;
-   SLIST_FOREACH(mapping_hashp, &mapping66_hash_6to6_heads[hash_index], entries) {
+   SLIST_FOREACH(mapping_hashp, &mapping66_hash_GtoI_heads[hash_index], entries) {
       mappingp = mapping_hashp->mappingp;
-      if (memcmp((const void *)addrp, (const void *)&mappingp->addr6_1,
+      if (memcmp((const void *)addrp, (const void *)&mappingp->global,
                sizeof(struct in6_addr)) == 0)
          /* Found. */
          return (mappingp);
@@ -631,6 +616,29 @@ mapping66_find_mapping_with_ip6_addr(const struct in6_addr *addrp)
    return (NULL);
 }
 
+/*
+ * Find the instance of the mapping{} structure which has the
+ * specified IPv6 address in its mapping information.
+ */
+   static const struct mapping66 *
+mapping66_find_mapping_with_I_addr(const struct in6_addr *addrp)
+{
+   assert(addrp != NULL);
+
+   int hash_index = mapping_get_hash_index(addrp, sizeof(struct in6_addr));
+
+   struct mapping66_hash *mapping_hashp = NULL;
+   struct mapping66 *mappingp = NULL;
+   SLIST_FOREACH(mapping_hashp, &mapping66_hash_ItoG_heads[hash_index], entries) {
+      mappingp = mapping_hashp->mappingp;
+      if (memcmp((const void *)addrp, (const void *)&mappingp->intra,
+               sizeof(struct in6_addr)) == 0)
+         /* Found. */
+         return (mappingp);
+   }
+
+   return (NULL);
+}
 
 /*
  * Insert a new instance of the mapping{} structure to the list, and
@@ -706,9 +714,9 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
     * Insert the new hash entry to the hash table for first IPv6 address
     * based search.
     */
-   if (mapping66_find_mapping_with_ip6_addr(&new_mappingp->addr6_1) == NULL) {
+   if (mapping66_find_mapping_with_G_addr(&new_mappingp->global) == NULL) {
       int hash_index;
-      hash_index = mapping_get_hash_index(&new_mappingp->addr6_1,
+      hash_index = mapping_get_hash_index(&new_mappingp->global,
             sizeof(struct in6_addr));
       struct mapping66_hash *mapping_hashp;
       mapping_hashp = malloc(sizeof(struct mapping66_hash));
@@ -718,7 +726,7 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
       }
       memset(mapping_hashp, 0, sizeof(struct mapping66_hash));
       mapping_hashp->mappingp = new_mappingp;
-      SLIST_INSERT_HEAD(&mapping66_hash_6to6_heads[hash_index], mapping_hashp,
+      SLIST_INSERT_HEAD(&mapping66_hash_GtoI_heads[hash_index], mapping_hashp,
             entries);
    }
 
@@ -726,18 +734,9 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
     * Insert the new hash entry to the hash table for IPv6 address
     * based search.
     */
-
-   struct mapping66 *inv_mappingp;
-   inv_mappingp = (struct mapping66*)malloc(sizeof(struct mapping66));
-   struct in6_addr temp;
-   temp = new_mappingp->addr6_2;
-   inv_mappingp->addr6_1 = temp;
-   temp = new_mappingp->addr6_1;
-   inv_mappingp->addr6_2 = temp;
-
-   if (mapping66_find_mapping_with_ip6_addr(&new_mappingp->addr6_2) == NULL) {
+   if (mapping66_find_mapping_with_I_addr(&new_mappingp->intra) == NULL) {
       int hash_index;
-      hash_index = mapping_get_hash_index(&new_mappingp->addr6_2,
+      hash_index = mapping_get_hash_index(&new_mappingp->intra,
             sizeof(struct in6_addr));
       struct mapping66_hash *mapping_hashp;
       mapping_hashp = malloc(sizeof(struct mapping66_hash));
@@ -748,29 +747,30 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
          return (-1);
       }
       memset(mapping_hashp, 0, sizeof(struct mapping66_hash));
-      mapping_hashp->mappingp = inv_mappingp;
-      SLIST_INSERT_HEAD(&mapping66_hash_6to6_heads[hash_index], mapping_hashp,
+      mapping_hashp->mappingp = new_mappingp;
+      SLIST_INSERT_HEAD(&mapping66_hash_ItoG_heads[hash_index], mapping_hashp,
             entries);
    }
 
    /* Insert the new mapping{} instance to the global list. */
    SLIST_INSERT_HEAD(&mapping66_head, new_mappingp, entries);
-   SLIST_INSERT_HEAD(&mapping66_head, inv_mappingp, entries);
 
    return (0);
 }
 
 int dispatch_6(const struct in6_addr* src, const struct in6_addr* dst){
-   const struct mapping66 *src_mappingp
-      = mapping66_find_mapping_with_ip6_addr(src);
-   
-   if(!src_mappingp){
-      return SIXTOSIX;
+   const struct mapping66 *mapping66p
+      = mapping66_find_mapping_with_I_addr(src);
+   const struct mapping *mapingp
+      = mapping_find_mapping_with_ip6_addr(src);
+
+   if(!mapping66p && !mappingp){
+      return SIXTOSIX_GtoI;
    }else{
       if(memcmp(dst, &mapping_prefix, 8) == 0)
          return SIXTOFOUR;
       else
-         return SIXTOSIX;
+         return SIXTOSIX_ItoG;
    }
 
    return 0;

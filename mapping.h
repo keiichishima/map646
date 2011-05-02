@@ -25,8 +25,9 @@
 #ifndef __MAPPING_H__
 #define __MAPPING_H__
 
-#define SIXTOSIX 1
-#define SIXTOFOUR 2
+#define SIXTOSIX_ItoG 1
+#define SIXTOSIX_GtoI 2
+#define SIXTOFOUR 3
 
 int mapping_initialize(void);
 int mapping_create_table(const char *, int);
@@ -39,7 +40,11 @@ int mapping_convert_addrs_6to4(const struct in6_addr *,
 			       const struct in6_addr *,
 			       struct in_addr *,
 			       struct in_addr *);
-int mapping66_convert_addrs_6to6(const struct in6_addr *,
+int mapping66_convert_addrs_ItoG(const struct in6_addr *,
+			       const struct in6_addr *,
+			       struct in6_addr *,
+			       struct in6_addr *);
+int mapping66_convert_addrs_GtoI(const struct in6_addr *,
 			       const struct in6_addr *,
 			       struct in6_addr *,
 			       struct in6_addr *);

@@ -292,7 +292,6 @@ tun_create_policy_table()
 int
 tun_add_policy(int af, const void *addr, int prefix_len) 
 {
-   warnx("add_policy");
    return tun_op_rule(RTM_NEWRULE, AF_INET6, addr, prefix_len, POLICY_TABLE_ID);
 }
 
