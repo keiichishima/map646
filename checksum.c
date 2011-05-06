@@ -139,6 +139,7 @@ cksum_update_ulp(int ulp, const void *orig_ip_hdrp, struct iovec *iov)
     udp_hdrp = iov[3].iov_base;
     sum = udp_hdrp->uh_sum;
     sum = ~sum & 0xffff;
+    sum -= cksum_acc_ip_pheader_wo_payload_len(orig_ip_hdrp);
     sum += cksum_acc_ip_pheader_wo_payload_len(iov[1].iov_base);
     ADDCARRY(sum);
     udp_hdrp->uh_sum = ~sum & 0xffff;
