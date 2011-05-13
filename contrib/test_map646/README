@@ -1,0 +1,56 @@
+/*
+ * Copyright 2010 IIJ Innovation Institute Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY IIJ INNOVATION INSTITUTE INC. ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL IIJ INNOVATION INSTITUTE INC. OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+
+============
+INTRODUCTION
+============
+
+test_map646 is an application to test map646's 4to6 address transration and
+6to6 address transration.
+Two programs are included in test_map646, test_map646_server and test_map646_client.sh.
+test_map646_client is for a client, test_map646_server.sh is for a server
+(in a pure IPv6 network).
+
+test_map646 checks map646's transration using PING[V6], TCP and UDP.
+
+==============
+HOW TO COMPILE
+==============
+
+Just type 'make' in both directry, test_map646/client and test_map646/server.
+
+==========
+HOW TO USE
+==========
+
+Before running test_map646, don't forget to configure and run map646.
+
+- for server-side
+#test_map646_server <Server Port>
+
+- for client-side
+#test_map646_client.sh <V4 Server Addr> <V6 Server Addr> <Server Port>
+
+
