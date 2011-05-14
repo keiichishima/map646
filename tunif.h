@@ -25,7 +25,7 @@
 #ifndef __TUNIF_H__
 #define __TUNIF_H__
 
-#define TUN_DEFAULT_IF_NAME "nat66"
+#define TUN_DEFAULT_IF_NAME "tun646"
 
 extern char tun_if_name[];
 
