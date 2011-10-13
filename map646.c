@@ -748,6 +748,15 @@ send_6to4(void *datap, size_t data_len)
 	    return (0);
 	  }
 	}
+	/*
+	 * If the input IPv6 packet is a fragmented packet which
+	 * is still too big to forward, then ip6_nxt has been set
+	 * to ipv6-frag.  Update the field with the final protocol
+	 * number before re-calculating upper layer checksum which
+	 * uses protocol number as a part of the IP pseudo header.
+	 * (This line can be placed out of this while loop.)
+	 */
+	ip6_hdrp->ip6_nxt = ip6_next_header;
 	cksum_update_ulp(ip4_hdr.ip_p, ip6_hdrp, iov);
       }
 
@@ -788,7 +797,7 @@ send_6to4(void *datap, size_t data_len)
        * header to the IPv4 header.
        */
       if (ip6_more_frag) {
-	ip4_hdr.ip_off = htons(IP_MF);
+	ip4_hdr.ip_off |= htons(IP_MF);
       }
       ip4_hdr.ip_off |= htons(ip6_offset >> 3);
       /*
@@ -841,6 +850,14 @@ send_6to4(void *datap, size_t data_len)
 	  return (0);
 	}
       }
+      /*
+       * Since the input IPv6 packet is a fragmented packet,
+       * ip6_nxt is set to ipv6-frag.  Update the field with the
+       * final protocol number before re-calculating upper layer
+       * checksum which uses protocol number as a part of the IP
+       * pseudo header.
+       */
+      ip6_hdrp->ip6_nxt = ip6_next_header;
       cksum_update_ulp(ip4_hdr.ip_p, ip6_hdrp, iov);
     }
 
