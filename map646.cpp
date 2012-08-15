@@ -410,7 +410,7 @@ send_4to6(void *datap, size_t data_len)
   /* Check the packet size. */
   if (ip4_tlen > data_len) {
     /* Data is too short.  Drop it. */
-    warnx("Insufficient data supplied (%d), while IP header says (%d)",
+    warnx("Insufficient data supplied (%lu), while IP header says (%d)",
 	  data_len, ip4_tlen);
     return (-1);
   }
@@ -789,7 +789,7 @@ send_6to4(void *datap, size_t data_len)
   /* Check the packet size. */
   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
     /* Data is too short.  Drop it. */
-    warnx("Insufficient data supplied (%d), while IP header says (%d)",
+    warnx("Insufficient data supplied (%lu), while IP header says (%lu)",
 	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
     return (-1);
   }
@@ -1079,15 +1079,9 @@ send66_ItoG(void *datap, size_t data_len)
 
   /* Fragment header check. */
   struct ip6_frag *ip6_frag_hdrp = NULL;
-  int ip6_more_frag = 0;
-  int ip6_offset = 0;
-  int ip6_id = 0;
   if (ip6_next_header == IPPROTO_FRAGMENT) {
     ip6_frag_hdrp = (struct ip6_frag *)packetp;
     ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
-    ip6_more_frag = ip6_frag_hdrp->ip6f_offlg & IP6F_MORE_FRAG;
-    ip6_offset = ntohs(ip6_frag_hdrp->ip6f_offlg & IP6F_OFF_MASK);
-    ip6_id = ntohl(ip6_frag_hdrp->ip6f_ident);
     packetp += sizeof(struct ip6_frag);
   }
 
@@ -1119,7 +1113,7 @@ send66_ItoG(void *datap, size_t data_len)
   /* Check the packet size. */
   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
     /* Data is too short.  Drop it. */
-    warnx("Insufficient data supplied (%d), while IP header says (%d)",
+    warnx("Insufficient data supplied (%lu), while IP header says (%lu)",
 	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
     return (-1);
   }
@@ -1221,15 +1215,9 @@ send66_GtoI(void *datap, size_t data_len)
 
   /* Fragment header check. */
   struct ip6_frag *ip6_frag_hdrp = NULL;
-  int ip6_more_frag = 0;
-  int ip6_offset = 0;
-  int ip6_id = 0;
   if (ip6_next_header == IPPROTO_FRAGMENT) {
     ip6_frag_hdrp = (struct ip6_frag *)packetp;
     ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
-    ip6_more_frag = ip6_frag_hdrp->ip6f_offlg & IP6F_MORE_FRAG;
-    ip6_offset = ntohs(ip6_frag_hdrp->ip6f_offlg & IP6F_OFF_MASK);
-    ip6_id = ntohl(ip6_frag_hdrp->ip6f_ident);
     packetp += sizeof(struct ip6_frag);
   }
 
@@ -1261,7 +1249,7 @@ send66_GtoI(void *datap, size_t data_len)
   /* Check the packet size. */
   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
     /* Data is too short.  Drop it. */
-    warnx("Insufficient data supplied (%d), while IP header says (%d)",
+    warnx("Insufficient data supplied (%lu), while IP header says (%lu)",
 	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
     return (-1);
   }

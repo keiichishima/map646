@@ -109,7 +109,7 @@ icmpsub_process_icmp4(int tun_fd, const struct icmp *icmp4_hdrp,
 	 * The original IPv4 header is necessary to extract the
 	 * destination address of the original packet.
 	 */
-	warnx("ICMP_UNREACH_NEEDFRAG message must be longer than %d "
+	warnx("ICMP_UNREACH_NEEDFRAG message must be longer than %lu "
 	      "(%d received).", ICMP_MINLEN + sizeof(struct ip), icmp4_size);
 	return (-1);
       }
@@ -194,7 +194,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
   *discard_okp = 0;
 
   if (icmp6_size < sizeof(struct icmp6_hdr)) {
-    warnx("ICMPv6 message must be longer than %d (%d received).",
+    warnx("ICMPv6 message must be longer than %lu (%d received).",
 	  sizeof(struct icmp6_hdr), icmp6_size);
     *discard_okp = 1;
     return (-1);
@@ -217,7 +217,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
        * The original IPv6 header is necessary to extract the
        * destination address of the original packet.
        */
-      warnx("ICMP6_PACKET_TOO_BIG message must be longer than %d "
+      warnx("ICMP6_PACKET_TOO_BIG message must be longer than %lu "
 	    "(%d received).",
 	    sizeof(struct icmp6_hdr) + sizeof(struct ip6_hdr), icmp6_size);
       return (-1);
