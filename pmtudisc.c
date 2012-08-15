@@ -1,5 +1,6 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010, 2011, 2012
+ *   IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -254,7 +255,7 @@ pmtudisc_insert_path_mtu(struct path_mtu *new_path_mtup)
     return (-1);
   }
 
-  int hash_index = pmtudisc_get_hash_index(new_dstp, new_dst_len); 
+  int hash_index = pmtudisc_get_hash_index(new_dstp, new_dst_len);
   struct path_mtu_hash *path_mtu_hashp;
   path_mtu_hashp = malloc(sizeof(struct path_mtu_hash));
   if (path_mtu_hashp == NULL) {

@@ -4,13 +4,13 @@ CFLAGS	= -Wall #-g -DDEBUG
 LIBS = -ljson
 
 map646: $(OBJS)
-	g++ $(CFLAGS) -o $@ $(OBJS) $(LIBS) 
+	g++ $(CFLAGS) -o $@ $(OBJS) $(LIBS)
 
 .c.o:
-	gcc -c $(CFLAGS) $< 
+	gcc -c $(CFLAGS) $<
 
 .cpp.o:
-	g++ -c $(CFLAGS) $< 
+	g++ -c $(CFLAGS) $<
 
 clean:
 	rm -f *.o map646 *~
