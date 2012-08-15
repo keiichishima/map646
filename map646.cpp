@@ -264,7 +264,7 @@ int main(int argc, char *argv[])
 	      map_stat.safe_write(fd, std::string("false"));
 	    }
 	  } else if(strcmp(command, "stat") == 0) {
-	    stat_enable != stat_enable;
+	    stat_enable = !stat_enable;
 	    if (stat_enable) {
 	      map_stat.safe_write(fd, std::string("true"));
 	    } else {
