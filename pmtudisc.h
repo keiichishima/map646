@@ -1,5 +1,5 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010 IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,8 +25,16 @@
 #ifndef __PMTUDISC_H__
 #define __PMTUDISC_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int pmtudisc_initialize(void);
 int pmtudisc_get_path_mtu_size(int, const void *);
 int pmtudisc_update_path_mtu_size(int, const void *, int);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

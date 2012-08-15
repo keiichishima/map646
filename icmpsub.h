@@ -25,6 +25,10 @@
 #ifndef _ICMPSUB_H_
 #define _ICMPSUB_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int icmpsub_process_icmp4(int, const struct icmp *, int, int *);
 int icmpsub_process_icmp6(int, const struct icmp6_hdr *, int, int *);
 int icmpsub_send_icmp4_unreach_needfrag(int, void *, const struct in_addr *,
@@ -32,6 +36,10 @@ int icmpsub_send_icmp4_unreach_needfrag(int, void *, const struct in_addr *,
 int icmpsub_send_icmp6_packet_too_big(int, void *, const struct in6_addr *,
 				      const struct in6_addr *, int);
 int icmpsub_convert_icmp(int, struct iovec *);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

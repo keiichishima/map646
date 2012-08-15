@@ -1,5 +1,5 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010 IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -39,6 +39,12 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/icmp6.h>
+
 
 #include "mapping.h"
 #include "tunif.h"
@@ -332,17 +338,18 @@ mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
       struct in_addr *ip4_dst)
 {
    assert(ip6_src != NULL);
-   assert(ip6_dst != NULL);
    assert(ip4_src != NULL);
-   assert(ip4_dst != NULL);
+   assert((ip6_dst == NULL && ip4_dst == NULL)||(ip6_dst != NULL && ip4_dst != NULL));
 
    /*
     * IPv4 destination address comes from the lower 4 bytes of the IPv6
     * pseudo destination address.
     */
-   const uint8_t *ip4_of_ip6 = (const uint8_t *)ip6_dst;
-   ip4_of_ip6 += 12;
-   memcpy((void *)ip4_dst, (const void *)ip4_of_ip6, sizeof(struct in_addr));
+   if(ip4_dst != NULL){
+      const uint8_t *ip4_of_ip6 = (const uint8_t *)ip6_dst;
+      ip4_of_ip6 += 12;
+      memcpy((void *)ip4_dst, (const void *)ip4_of_ip6, sizeof(struct in_addr));
+   }
 
    /*
     * IPv4 psuedo source address is the associated address of the IPv6
@@ -418,9 +425,8 @@ mapping66_convert_addrs_ItoG(const struct in6_addr *ip6_before_src,
       struct in6_addr *ip6_after_dst)
 {
    assert(ip6_before_src != NULL);
-   assert(ip6_before_dst != NULL);
    assert(ip6_after_src != NULL);
-   assert(ip6_after_dst != NULL);
+   assert((ip6_before_dst == NULL && ip6_after_dst == NULL)||(ip6_before_dst != NULL && ip6_after_dst != NULL));
 
 
    const struct mapping66 *mappingp
@@ -435,7 +441,8 @@ mapping66_convert_addrs_ItoG(const struct in6_addr *ip6_before_src,
       warnx("from private network");
 #endif
       memcpy((void *)ip6_after_src, (const void *)&mappingp->global, sizeof(struct in6_addr));
-      memcpy((void *)ip6_after_dst, (const void *)ip6_before_dst, sizeof(struct in6_addr));
+      if(ip6_before_dst)
+         memcpy((void *)ip6_after_dst, (const void *)ip6_before_dst, sizeof(struct in6_addr));
    }else{
       /* 
        * no mapping exists
@@ -482,6 +489,12 @@ mapping_install_route(void)
 
    struct mapping66 *mapping66p;
    SLIST_FOREACH(mapping66p, &mapping66_head, entries) {
+      if (tun_add_route(AF_INET6, &mapping66p->global, 128) == -1){
+         char addr_name[64];
+         warnx("IPv6 host %s route entry addition failed.",
+               inet_ntop(AF_INET6, &mapping66p->global, addr_name, 64));
+      }
+
       if (tun_add_policy(AF_INET6, &mapping66p->intra, 128) == -1) {
          char addr_name[64];
          warnx("IPv6 host %s policy route entry addition failed.",
@@ -758,21 +771,35 @@ mapping66_insert_mapping(struct mapping66 *new_mappingp)
    return (0);
 }
 
-int dispatch_6(const struct in6_addr* src, const struct in6_addr* dst){
-   const struct mapping66 *mapping66p
-      = mapping66_find_mapping_with_I_addr(src);
-   const struct mapping *mappingp
-      = mapping_find_mapping_with_ip6_addr(src);
+uint8_t dispatch(uint8_t *bufp){
+   assert(bufp != NULL);
+   uint32_t af = 0;
+   af = tun_get_af(bufp);
+   bufp += sizeof(uint32_t);
+#ifdef DEBUG
+         fprintf(stderr, "af = %d\n", af);
+#endif
+   
+   if(af == AF_INET){
+      return FOURTOSIX;
+   }else if(af == AF_INET6){
+      struct ip6_hdr *ip6_hdrp = (struct ip6_hdr *)bufp;
 
-   if(!mapping66p && !mappingp){
-      return SIXTOSIX_GtoI;
-   }else{
-      if(memcmp(dst, &mapping_prefix, 8) == 0)
-         return SIXTOFOUR;
-      else
-         return SIXTOSIX_ItoG;
+      const struct mapping66 *mapping66p 
+         = mapping66_find_mapping_with_I_addr(&ip6_hdrp->ip6_src);
+      const struct mapping *mappingp
+         = mapping_find_mapping_with_ip6_addr(&ip6_hdrp->ip6_src);
+
+      if(!mapping66p && !mappingp){
+         return SIXTOSIX_GtoI;
+      }else{
+         if(memcmp(&ip6_hdrp->ip6_dst, &mapping_prefix, 8) == 0)
+            return SIXTOFOUR;
+         else
+            return SIXTOSIX_ItoG;
+      }
    }
 
    return 0;
-}
 
+}
