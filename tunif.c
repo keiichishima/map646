@@ -337,7 +337,7 @@ tun_op_route(int op, int af, const void *addr, int prefix_len, int rt_class)
   m_nlmsg.m_rtmsg.rtm_table = rt_class;
   switch (op) {
   case RTM_NEWROUTE:
-    m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
+    m_nlmsg.m_nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE;
     m_nlmsg.m_rtmsg.rtm_protocol = RTPROT_BOOT;
     m_nlmsg.m_rtmsg.rtm_scope = RT_SCOPE_UNIVERSE;
     m_nlmsg.m_rtmsg.rtm_type = RTN_UNICAST;
