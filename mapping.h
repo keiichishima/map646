@@ -47,13 +47,13 @@ int mapping_convert_addrs_6to4(const struct in6_addr *,
 			       struct in_addr *,
 			       struct in_addr *);
 int mapping66_convert_addrs_ItoG(const struct in6_addr *,
-			       const struct in6_addr *,
-			       struct in6_addr *,
-			       struct in6_addr *);
+				 const struct in6_addr *,
+				 struct in6_addr *,
+				 struct in6_addr *);
 int mapping66_convert_addrs_GtoI(const struct in6_addr *,
-			       const struct in6_addr *,
-			       struct in6_addr *,
-			       struct in6_addr *);
+				 const struct in6_addr *,
+				 struct in6_addr *,
+				 struct in6_addr *);
 int dispatch_6(const struct in6_addr *, const struct in6_addr *);
 uint8_t dispatch(uint8_t *);
 int mapping_install_route(void);
