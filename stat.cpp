@@ -138,7 +138,7 @@ namespace map646_stat{
 	/* Check the packet size. */
 	if (ip4_tlen > len) {
 	  /* Data is too short.  Drop it. */
-	  warnx("Insufficient data supplied (%d), while IP header says (%d)",
+	  warnx("Insufficient data supplied (%zd), while IP header says (%d)",
 		len, ip4_tlen);
 	  break;
 	}
@@ -203,7 +203,7 @@ namespace map646_stat{
 	/* Check the packet size. */
 	if (ip6_payload_len + (ssize_t)sizeof(ip6_hdr) > len) {
 	  /* Data is too short.  Drop it. */
-	  warnx("Insufficient data supplied (%d), while IP header says (%d)",
+	  warnx("Insufficient data supplied (%zd), while IP header says (%lu)",
 		len, ip6_payload_len + sizeof(ip6_hdr));
 	  break;
 	}
@@ -261,7 +261,7 @@ namespace map646_stat{
 	/* Check the packet size. */
 	if (ip6_payload_len + (ssize_t)sizeof(ip6_hdr) > len) {
 	  /* Data is too short.  Drop it. */
-	  warnx("Insufficient data supplied (%d), while IP header says (%d)",
+	  warnx("Insufficient data supplied (%zd), while IP header says (%lu)",
 		len, ip6_payload_len + sizeof(ip6_hdr));
 	  break;
 	}
@@ -323,7 +323,7 @@ namespace map646_stat{
 	/* Check the packet size. */
 	if (ip6_payload_len + (ssize_t)sizeof(ip6_hdr) > len) {
 	  /* Data is too short.  Drop it. */
-	  warnx("Insufficient data supplied (%d), while IP header says (%d)",
+	  warnx("Insufficient data supplied (%zd), while IP header says (%lu)",
 		len, ip6_payload_len + sizeof(ip6_hdr));
 	  break;
 	}
