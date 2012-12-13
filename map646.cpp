@@ -1,5 +1,6 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010, 2011, 2012
+ *   IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -28,13 +29,20 @@
 #include <signal.h>
 #include <assert.h>
 #include <err.h>
+#include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <iostream>
+#include <string>
 
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-
+#include <sys/epoll.h>
 #include <net/if.h>
+
+#include <sys/time.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -48,6 +56,7 @@
 #include "checksum.h"
 #include "pmtudisc.h"
 #include "icmpsub.h"
+#include "stat.h"
 
 #if defined(__linux__)
 #define IPV6_VERSION 0x60
@@ -57,23 +66,37 @@
 			local interfaces used to transmit actual
 			packets. */
 
-
 static int send_4to6(void *, size_t);
 static int send_6to4(void *, size_t);
 static int send66_GtoI(void *, size_t);
 static int send66_ItoG(void *, size_t);
-static int send_6(void *, size_t);
+
 void cleanup_sigint(int);
 void cleanup(void);
 void reload_sighup(int);
 
 int tun_fd;
-char *map646_conf_path = "/etc/map646.conf";
+int stat_listen_fd, stat_fd;
 
+std::string map646_conf_path("/etc/map646.conf");
+map646_stat::stat map_stat;
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
+
+  /* Configuration path option */
+  if (argc == 3) {
+    if (!strcmp("-c", argv[1])) {
+      map646_conf_path = argv[2];
+    } else {
+      std::cout <<"Usage:" << argv[0] << " [-c] <Conf path>" << std::endl;
+      exit(1);
+    }
+  } else if (argc != 1) {
+    std::cout <<"Usage:" << argv[0] << " [-c] <Conf path>" << std::endl;
+    exit(1);
+  }
+
   /* Initialization of supporting classes. */
   if (mapping_initialize() == -1) {
     errx(EXIT_FAILURE, "failed to initialize the mapping class.");
@@ -101,46 +124,174 @@ main(int argc, char *argv[])
     errx(EXIT_FAILURE, "cannot open a tun internface %s.", tun_if_name);
   }
 
+  /* Create a stat socket */
+  stat_listen_fd = -1;
+  stat_fd = -1;
+  sockaddr_un caddr;
+  socklen_t len;
+
+  memset(&caddr, 0, sizeof(sockaddr_un));
+  memset(&len, 0, sizeof(socklen_t));
+
+  stat_listen_fd = map646_stat::statif_alloc();
+  if (stat_listen_fd == -1) {
+    err(EXIT_FAILURE, "failed to open a stat interface");
+  }
+
+  /* Set up epoll */
+  int epfd, nfiles = 10;
+  epoll_event *epevp;
+  if((epfd = epoll_create( nfiles )) == -1) {
+    errx(EXIT_FAILURE, "epoll_create() failed");
+  }
+
+  epevp = new epoll_event;
+  epevp->data.fd = tun_fd;
+  epevp->events = EPOLLIN;
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, tun_fd, epevp) == -1) {
+    errx(EXIT_FAILURE, "epoll_ctl() failed");
+  }
+  delete epevp;
+
+  epevp = new epoll_event;
+  epevp->data.fd = stat_listen_fd;
+  epevp->events = EPOLLIN;
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, stat_listen_fd, epevp) == -1) {
+    errx(EXIT_FAILURE, "epoll_ctl() failed");
+  }
+  delete epevp;
+
   /* Create mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path, 0) == -1) {
+  if (mapping_create_table(map646_conf_path.c_str(), 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
-  
+
   /*
    * Install necessary route entries based on the mapping table
    * information.
    */
-  
+
   if (mapping_install_route() == -1) {
     errx(EXIT_FAILURE, "failed to install mapped route information.");
   }
 
   ssize_t read_len;
-  char buf[BUF_LEN];
-  char *bufp;
-  while ((read_len = read(tun_fd, (void *)buf, BUF_LEN)) != -1) {
-    bufp = buf;
+  uint8_t buf[BUF_LEN];
+  uint8_t *bufp;
 
-    uint32_t af = 0;
-    af = tun_get_af(bufp);
-    bufp += sizeof(uint32_t);
-#ifdef DEBUG
-    fprintf(stderr, "af = %d\n", af);
-#endif
-    switch (af) {
-    case AF_INET:
-      send_4to6(bufp, (size_t)read_len);
-      break;
-    case AF_INET6:
-      send_6(bufp, (size_t)read_len);
-      break;
-    default:
-      warnx("unsupported address family %d is received.", af);
+  bool stat_enable = true;
+
+  std::cout << std::boolalpha << "stat_enable: " << stat_enable << std::endl;
+
+  /* MAIN WHILE LOOP */
+  while (1) {
+    int res;
+    int timeout = -1;
+    struct epoll_event events[nfiles];
+    if ((res = epoll_wait(epfd, events, nfiles, timeout)) == -1) {
+      if (errno == EINTR) {
+	continue;
+      }
+      errx(EXIT_FAILURE,"epoll_wait() failed ");
+    }
+
+    for (int i = 0; i < res; i++) {
+      int fd = events[i].data.fd;
+
+      if (fd == tun_fd) {
+	read_len = read(tun_fd, (void *)buf, BUF_LEN);
+	bufp = buf;
+	int d = dispatch(bufp);
+	bufp += sizeof(uint32_t);
+
+	if (stat_enable == true) {
+	  if (map_stat.update(bufp, read_len, d) < 0) {
+	    warnx("failed to update stat");
+	  }
+	}
+
+	switch (d) {
+	case FOURTOSIX:
+	  send_4to6(bufp, (size_t)read_len);
+	  break;
+	case SIXTOFOUR:
+	  send_6to4(bufp, (size_t)read_len);
+	  break;
+	case SIXTOSIX_GtoI:
+	  send66_GtoI(bufp, (size_t)read_len);
+	  break;
+	case SIXTOSIX_ItoG:
+	  send66_ItoG(bufp, (size_t)read_len);
+	  break;
+	default:
+	  warnx("unsupported mapping");
+	}
+
+      } else if (fd == stat_listen_fd) {
+	if((stat_fd = accept(stat_listen_fd, (sockaddr *)&caddr, &len)) < 0){
+	  warnx("failed to accept stat client");
+	  break;
+	}
+	epoll_event epev;
+	epev.data.fd = stat_fd;
+	epev.events = EPOLLIN;
+	if (epoll_ctl(epfd, EPOLL_CTL_ADD, stat_fd, &epev) == -1) {
+	  warnx("epoll_ctr failed()");
+	}
+      } else {
+	const int COMMAND_SIZE = 10;
+	char command[COMMAND_SIZE];
+	std::string list("show, info, time, flush, toggle, help, stat");
+	memset(command, 0, COMMAND_SIZE);
+	int size;
+	if ((size = read(fd, command, COMMAND_SIZE)) < 0) {
+	  warnx("read() faild");
+	} else if (size != 0) {
+	  if (strcmp(command, "show") == 0) {
+	    map_stat.write_stat(stat_fd);
+	  } else if (strcmp(command, "info") == 0) {
+	    map_stat.write_info(stat_fd);
+	  } else if (strcmp(command, "time") == 0) {
+	    map_stat.write_last_flush_time(stat_fd);
+	  } else if (strcmp(command, "flush") == 0) {
+	    map_stat.flush();
+	    map_stat.safe_write(fd, std::string("flushed"));
+	  } else if (strcmp(command, "toggle") == 0) {
+	    stat_enable = !stat_enable;
+	    if (stat_enable) {
+	      map_stat.safe_write(fd, std::string("true"));
+	    } else {
+	      map_stat.safe_write(fd, std::string("false"));
+	    }
+	  } else if(strcmp(command, "stat") == 0) {
+	    stat_enable = !stat_enable;
+	    if (stat_enable) {
+	      map_stat.safe_write(fd, std::string("true"));
+	    } else {
+	      map_stat.safe_write(fd, std::string("false"));
+	    }
+	  } else if (strcmp(command, "help") == 0) {
+	    map_stat.safe_write(fd, list);
+	  } else {
+	    std::string msg("unknown commands: ");
+	    msg += list;
+	    map_stat.safe_write(fd, msg);
+	  }
+	}
+
+	epoll_event epev;
+	epev.data.fd = fd;
+	if (epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &epev) == -1) {
+	  perror("epoll_ctl() EPOLL_CTL_DEL failed");
+	}
+	close(fd);
+      }
     }
   }
+
   /*
    * The program reaches here only when read(2) fails in the above
-   * while loop.  This happens when a user type Ctrl-C too.
+   * while loop.
    */
   if (mapping_uninstall_route() == -1) {
     warnx("failed to uninstall route entries created before.  should we continue?");
@@ -152,7 +303,7 @@ main(int argc, char *argv[])
  * The clenaup routine called when SIGINT is received, typically when
  * the program is terminated by a user.
  */
-void
+   void
 cleanup_sigint(int dummy)
 {
   cleanup();
@@ -164,16 +315,30 @@ cleanup_sigint(int dummy)
  * systems.  In Linux systems, the tun interface will automatically
  * disappear when the owner process dies.
  */
-void
+   void
 cleanup(void)
 {
+  if (getpid() == 0) {
+    std::cout << "cleanup called" << std::endl;
+    if (mapping_uninstall_route() == -1) {
+      warnx("failed to uninstall route entries created before.  should we continue?");
+    }
+  }
   if (tun_fd != -1) {
     close(tun_fd);
+  }
+  if (stat_listen_fd != -1){
+    close(stat_listen_fd);
+  }
+  if (stat_fd != -1){
+    close(stat_fd);
   }
 
 #if !defined(__linux__)
   (void)tun_dealloc(tun_if_name);
 #endif
+
+  exit(EXIT_SUCCESS);
 }
 
 /*
@@ -184,19 +349,20 @@ cleanup(void)
 void
 reload_sighup(int dummy)
 {
-  /* 
+  std::cout << "reload_sighup" << std::endl;
+  /*
    * Uninstall all the route installed when the configuration file was
    * read last time.
    */
   if (mapping_uninstall_route() == -1) {
     warnx("failed to uninstall route entries created before.  should we continue?");
-  }
+   }
 
   /* Destroy the mapping table. */
   mapping_destroy_table();
 
   /* Create a new mapping table from the configuraion file. */
-  if (mapping_create_table(map646_conf_path, 0) == -1) {
+  if (mapping_create_table(map646_conf_path.c_str(), 0) == -1) {
     errx(EXIT_FAILURE, "mapping table creation failed.");
   }
 
@@ -218,7 +384,7 @@ send_4to6(void *datap, size_t data_len)
 {
   assert (datap != NULL);
 
-  uint8_t *packetp = datap;
+  uint8_t *packetp = (uint8_t *)datap;
 
   /* Analyze IPv4 header contents. */
   struct ip *ip4_hdrp;
@@ -244,7 +410,7 @@ send_4to6(void *datap, size_t data_len)
   /* Check the packet size. */
   if (ip4_tlen > data_len) {
     /* Data is too short.  Drop it. */
-    warnx("Insufficient data supplied (%ld), while IP header says (%d)",
+    warnx("Insufficient data supplied (%lu), while IP header says (%d)",
 	  data_len, ip4_tlen);
     return (-1);
   }
@@ -275,13 +441,14 @@ send_4to6(void *datap, size_t data_len)
   if (ip4_proto == IPPROTO_ICMP) {
     int discard_ok = 0;
     if (icmpsub_process_icmp4(tun_fd, (const struct icmp *)packetp,
-			      data_len - ((void *)packetp - datap),
+			      data_len - sizeof(ip4_hlen),
 			      &discard_ok)
 	== -1) {
       return (0);
     }
-    if (discard_ok)
+    if (discard_ok) {
       return (0);
+    }
   }
 
   /* Convert IP addresses. */
@@ -420,7 +587,7 @@ send_4to6(void *datap, size_t data_len)
 	}
 	cksum_update_ulp(ip6_hdr.ip6_nxt, ip4_hdrp, iov);
       } else if (ip4_proto == IPPROTO_ICMP) {
-	/* 
+	/*
 	 * ICMP to ICMPv6 special case handling.  The next header
 	 * value of the first fragment of ICMPv6 is set to
 	 * IPPROTO_ICMPV6 in the convert_icmp() function, but the rest
@@ -556,7 +723,7 @@ send_6to4(void *datap, size_t data_len)
 {
   assert(datap != NULL);
 
-  char *packetp = datap;
+  char *packetp = (char *)datap;
 
   /* Analyze IPv6 header contents. */
   struct ip6_hdr *ip6_hdrp;
@@ -570,13 +737,14 @@ send_6to4(void *datap, size_t data_len)
   if (ip6_next_header == IPPROTO_ICMPV6) {
     int discard_ok = 0;
     if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
-			      data_len - ((void *)packetp - datap),
+			      data_len - sizeof(ip6_hdr),
 			      &discard_ok)
 	== -1) {
       return (0);
     }
-    if (discard_ok)
+    if (discard_ok) {
       return (0);
+    }
   }
 
   /* Fragment header check. */
@@ -617,11 +785,11 @@ send_6to4(void *datap, size_t data_len)
     ip6_payload_len -= sizeof(struct ip6_frag);
   }
   ip6_hop_limit = ip6_hdrp->ip6_hlim;
-  
+
   /* Check the packet size. */
   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
     /* Data is too short.  Drop it. */
-    warnx("Insufficient data supplied (%ld), while IP header says (%ld)",
+    warnx("Insufficient data supplied (%lu), while IP header says (%lu)",
 	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
     return (-1);
   }
@@ -748,6 +916,15 @@ send_6to4(void *datap, size_t data_len)
 	    return (0);
 	  }
 	}
+	/*
+	 * If the input IPv6 packet is a fragmented packet which
+	 * is still too big to forward, then ip6_nxt has been set
+	 * to ipv6-frag.  Update the field with the final protocol
+	 * number before re-calculating upper layer checksum which
+	 * uses protocol number as a part of the IP pseudo header.
+	 * (This line can be placed out of this while loop.)
+	 */
+	ip6_hdrp->ip6_nxt = ip6_next_header;
 	cksum_update_ulp(ip4_hdr.ip_p, ip6_hdrp, iov);
       }
 
@@ -788,7 +965,7 @@ send_6to4(void *datap, size_t data_len)
        * header to the IPv4 header.
        */
       if (ip6_more_frag) {
-	ip4_hdr.ip_off = htons(IP_MF);
+	ip4_hdr.ip_off |= htons(IP_MF);
       }
       ip4_hdr.ip_off |= htons(ip6_offset >> 3);
       /*
@@ -841,6 +1018,15 @@ send_6to4(void *datap, size_t data_len)
 	  return (0);
 	}
       }
+
+      /*
+       * Since the input IPv6 packet is a fragmented packet,
+       * ip6_nxt is set to ipv6-frag.  Update the field with the
+       * final protocol number before re-calculating upper layer
+       * checksum which uses protocol number as a part of the IP
+       * pseudo header.
+       */
+      ip6_hdrp->ip6_nxt = ip6_next_header;
       cksum_update_ulp(ip4_hdr.ip_p, ip6_hdrp, iov);
     }
 
@@ -863,111 +1049,105 @@ send_6to4(void *datap, size_t data_len)
  * Convert an IPv6 packet given as the argument to an IPv6 packet, and
  * send it.
  */
-   static int
+static int
 send66_ItoG(void *datap, size_t data_len)
 {
-   assert(datap != NULL);
+  assert(datap != NULL);
 
-   char *packetp = datap;
+  char *packetp = (char *)datap;
 
-   /* Analyze IPv6 header contents. */
-   struct ip6_hdr *ip6_hdrp;
-   uint8_t ip6_next_header;
-   ip6_hdrp = (struct ip6_hdr *)packetp;
-   ip6_next_header = ip6_hdrp->ip6_nxt;
-   packetp += sizeof(struct ip6_hdr);
+  /* Analyze IPv6 header contents. */
+  struct ip6_hdr *ip6_hdrp;
+  uint8_t ip6_next_header;
+  ip6_hdrp = (struct ip6_hdr *)packetp;
+  ip6_next_header = ip6_hdrp->ip6_nxt;
+  packetp += sizeof(struct ip6_hdr);
 
-   /* ICMPv6 error handling. */
-   /* XXX: we don't handle fragmented ICMPv6 messages. */
-   if (ip6_next_header == IPPROTO_ICMPV6) {
-      int discard_ok = 0;
-      if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
-               data_len - ((void *)packetp - datap),
-               &discard_ok)
-            == -1) {
-         return (0);
-      }
-      if (discard_ok)
-         return (0);
-   }
-
-   /* Fragment header check. */
-   struct ip6_frag *ip6_frag_hdrp = NULL;
-   int ip6_more_frag = 0;
-   int ip6_offset = 0;
-   int ip6_id = 0;
-   if (ip6_next_header == IPPROTO_FRAGMENT) {
-      ip6_frag_hdrp = (struct ip6_frag *)packetp;
-      ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
-      ip6_more_frag = ip6_frag_hdrp->ip6f_offlg & IP6F_MORE_FRAG;
-      ip6_offset = ntohs(ip6_frag_hdrp->ip6f_offlg & IP6F_OFF_MASK);
-      ip6_id = ntohl(ip6_frag_hdrp->ip6f_ident);
-      packetp += sizeof(struct ip6_frag);
-   }
-
-   /*
-    * Next header check: Currently, any kinds of extension headers other
-    * than the Fragment header are not supported and just dropped.
-    */
-   if (ip6_next_header != IPPROTO_ICMPV6
-         && ip6_next_header != IPPROTO_TCP
-         && ip6_next_header != IPPROTO_UDP) {
-      warnx("Extention header %d is not supported.", ip6_next_header);
+  /* ICMPv6 error handling. */
+  /* XXX: we don't handle fragmented ICMPv6 messages. */
+  if (ip6_next_header == IPPROTO_ICMPV6) {
+    int discard_ok = 0;
+    if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
+			      data_len - sizeof(ip6_hdr),
+			      &discard_ok)
+	== -1) {
       return (0);
-   }
+    }
+    if (discard_ok)
+      return (0);
+  }
 
-   /* Get some basic IPv6 header values. */
-   struct in6_addr ip6_before_src, ip6_before_dst;
-   uint16_t ip6_payload_len;
-   uint8_t ip6_hop_limit;
-   memcpy((void *)&ip6_before_src, (const void *)&ip6_hdrp->ip6_src,
-         sizeof(struct in6_addr));
-   memcpy((void *)&ip6_before_dst, (const void *)&ip6_hdrp->ip6_dst,
-         sizeof(struct in6_addr));
-   ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
-   if (ip6_frag_hdrp != NULL) {
-      ip6_payload_len -= sizeof(struct ip6_frag);
-   }
-   ip6_hop_limit = ip6_hdrp->ip6_hlim;
+  /* Fragment header check. */
+  struct ip6_frag *ip6_frag_hdrp = NULL;
+  if (ip6_next_header == IPPROTO_FRAGMENT) {
+    ip6_frag_hdrp = (struct ip6_frag *)packetp;
+    ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
+    packetp += sizeof(struct ip6_frag);
+  }
 
-   /* Check the packet size. */
-   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
-      /* Data is too short.  Drop it. */
-      warnx("Insufficient data supplied (%ld), while IP header says (%ld)",
-            data_len, ip6_payload_len + sizeof(struct ip6_hdr));
-      return (-1);
-   }
+  /*
+   * Next header check: Currently, any kinds of extension headers other
+   * than the Fragment header are not supported and just dropped.
+   */
+  if (ip6_next_header != IPPROTO_ICMPV6
+      && ip6_next_header != IPPROTO_TCP
+      && ip6_next_header != IPPROTO_UDP) {
+    warnx("Extention header %d is not supported.", ip6_next_header);
+    return (0);
+  }
+
+  /* Get some basic IPv6 header values. */
+  struct in6_addr ip6_before_src, ip6_before_dst;
+  uint16_t ip6_payload_len;
+  uint8_t ip6_hop_limit;
+  memcpy((void *)&ip6_before_src, (const void *)&ip6_hdrp->ip6_src,
+	 sizeof(struct in6_addr));
+  memcpy((void *)&ip6_before_dst, (const void *)&ip6_hdrp->ip6_dst,
+	 sizeof(struct in6_addr));
+  ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
+  if (ip6_frag_hdrp != NULL) {
+    ip6_payload_len -= sizeof(struct ip6_frag);
+  }
+  ip6_hop_limit = ip6_hdrp->ip6_hlim;
+
+  /* Check the packet size. */
+  if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
+    /* Data is too short.  Drop it. */
+    warnx("Insufficient data supplied (%lu), while IP header says (%lu)",
+	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
+    return (-1);
+  }
 
 #ifdef DEBUG
-   char addr_name[64];
-   fprintf(stderr, "src = %s\n",
-         inet_ntop(AF_INET6, &ip6_before_src, addr_name, 64));
-   fprintf(stderr, "dst = %s\n",
-         inet_ntop(AF_INET6, &ip6_before_dst, addr_name, 64));
-   fprintf(stderr, "plen = %d\n", ip6_payload_len);
-   fprintf(stderr, "nxt = %d\n", ip6_next_header);
-   fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
+  char addr_name[64];
+  fprintf(stderr, "src = %s\n",
+	  inet_ntop(AF_INET6, &ip6_before_src, addr_name, 64));
+  fprintf(stderr, "dst = %s\n",
+	  inet_ntop(AF_INET6, &ip6_before_dst, addr_name, 64));
+  fprintf(stderr, "plen = %d\n", ip6_payload_len);
+  fprintf(stderr, "nxt = %d\n", ip6_next_header);
+  fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
 #endif
 
-   /* Convert IP addresses. */
-   struct in6_addr ip6_after_src, ip6_after_dst;
-   if (mapping66_convert_addrs_ItoG(&ip6_before_src, &ip6_before_dst,
-            &ip6_after_src, &ip6_after_dst) == -1) {
-      warnx("no mapping available. packet is dropped.");
-      return (-1);
-   }
+  /* Convert IP addresses. */
+  struct in6_addr ip6_after_src, ip6_after_dst;
+  if (mapping66_convert_addrs_ItoG(&ip6_before_src, &ip6_before_dst,
+				   &ip6_after_src, &ip6_after_dst) == -1) {
+    warnx("no mapping available. packet is dropped.");
+    return (-1);
+  }
 
-   /* Prepare an IPv6 header template. */
-   struct ip6_hdr ip6_hdr;
-   memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
-   ip6_hdr.ip6_vfc = IPV6_VERSION;
-   ip6_hdr.ip6_plen = ip6_hdrp->ip6_plen;
-   ip6_hdr.ip6_nxt = ip6_next_header;
-   ip6_hdr.ip6_hlim = ip6_hop_limit;
-   memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_after_src,
-         sizeof(struct in6_addr));
-   memcpy((void *)&ip6_hdr.ip6_dst, (const void *)&ip6_after_dst,
-         sizeof(struct in6_addr));
+  /* Prepare an IPv6 header template. */
+  struct ip6_hdr ip6_hdr;
+  memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
+  ip6_hdr.ip6_vfc = IPV6_VERSION;
+  ip6_hdr.ip6_plen = ip6_hdrp->ip6_plen;
+  ip6_hdr.ip6_nxt = ip6_next_header;
+  ip6_hdr.ip6_hlim = ip6_hop_limit;
+  memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_after_src,
+	 sizeof(struct in6_addr));
+  memcpy((void *)&ip6_hdr.ip6_dst, (const void *)&ip6_after_dst,
+	 sizeof(struct in6_addr));
 
 #ifdef DEBUG
   fprintf(stderr, "to src = %s\n",
@@ -977,139 +1157,133 @@ send66_ItoG(void *datap, size_t data_len)
   fprintf(stderr, "plen = %d\n", ntohs(ip6_hdr.ip6_plen));
 #endif
 
-   struct iovec iov[4];
-   uint32_t af;
+  struct iovec iov[4];
+  uint32_t af;
 
-   tun_set_af(&af, AF_INET6);
-   iov[0].iov_base = &af;
-   iov[0].iov_len = sizeof(uint32_t);
-   iov[1].iov_base = &ip6_hdr;
-   iov[1].iov_len = sizeof(struct ip6_hdr);
-   iov[2].iov_base = NULL;
-   iov[2].iov_len = 0;
-   iov[3].iov_base = packetp;
-   iov[3].iov_len = ip6_payload_len;
+  tun_set_af(&af, AF_INET6);
+  iov[0].iov_base = &af;
+  iov[0].iov_len = sizeof(uint32_t);
+  iov[1].iov_base = &ip6_hdr;
+  iov[1].iov_len = sizeof(struct ip6_hdr);
+  iov[2].iov_base = NULL;
+  iov[2].iov_len = 0;
+  iov[3].iov_base = packetp;
+  iov[3].iov_len = ip6_payload_len;
 
-   cksum66_update_ulp(ip6_hdr.ip6_nxt, ip6_hdrp, iov);
-   
-   ssize_t write_len;
-   write_len = writev(tun_fd, iov, 4);
-   if (write_len == -1) {
-      warn("sending an IPv6 packet failed.");
-   }
+  cksum66_update_ulp(ip6_hdr.ip6_nxt, ip6_hdrp, iov);
 
-   return (0);
+  ssize_t write_len;
+  write_len = writev(tun_fd, iov, 4);
+  if (write_len == -1) {
+    warn("sending an IPv6 packet failed.");
+  }
+
+  return (0);
 }
 
 /*
  * Convert an IPv6 packet given as the argument to an IPv6 packet, and
  * send it.
  */
-   static int
+static int
 send66_GtoI(void *datap, size_t data_len)
 {
-   assert(datap != NULL);
+  assert(datap != NULL);
 
-   char *packetp = datap;
+  char *packetp = (char *)datap;
 
-   /* Analyze IPv6 header contents. */
-   struct ip6_hdr *ip6_hdrp;
-   uint8_t ip6_next_header;
-   ip6_hdrp = (struct ip6_hdr *)packetp;
-   ip6_next_header = ip6_hdrp->ip6_nxt;
-   packetp += sizeof(struct ip6_hdr);
+  /* Analyze IPv6 header contents. */
+  struct ip6_hdr *ip6_hdrp;
+  uint8_t ip6_next_header;
+  ip6_hdrp = (struct ip6_hdr *)packetp;
+  ip6_next_header = ip6_hdrp->ip6_nxt;
+  packetp += sizeof(struct ip6_hdr);
 
-   /* ICMPv6 error handling. */
-   /* XXX: we don't handle fragmented ICMPv6 messages. */
-   if (ip6_next_header == IPPROTO_ICMPV6) {
-      int discard_ok = 0;
-      if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
-               data_len - ((void *)packetp - datap),
-               &discard_ok)
-            == -1) {
-         return (0);
-      }
-      if (discard_ok)
-         return (0);
-   }
-
-   /* Fragment header check. */
-   struct ip6_frag *ip6_frag_hdrp = NULL;
-   int ip6_more_frag = 0;
-   int ip6_offset = 0;
-   int ip6_id = 0;
-   if (ip6_next_header == IPPROTO_FRAGMENT) {
-      ip6_frag_hdrp = (struct ip6_frag *)packetp;
-      ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
-      ip6_more_frag = ip6_frag_hdrp->ip6f_offlg & IP6F_MORE_FRAG;
-      ip6_offset = ntohs(ip6_frag_hdrp->ip6f_offlg & IP6F_OFF_MASK);
-      ip6_id = ntohl(ip6_frag_hdrp->ip6f_ident);
-      packetp += sizeof(struct ip6_frag);
-   }
-
-   /*
-    * Next header check: Currently, any kinds of extension headers other
-    * than the Fragment header are not supported and just dropped.
-    */
-   if (ip6_next_header != IPPROTO_ICMPV6
-         && ip6_next_header != IPPROTO_TCP
-         && ip6_next_header != IPPROTO_UDP) {
-      warnx("Extention header %d is not supported.", ip6_next_header);
+  /* ICMPv6 error handling. */
+  /* XXX: we don't handle fragmented ICMPv6 messages. */
+  if (ip6_next_header == IPPROTO_ICMPV6) {
+    int discard_ok = 0;
+    if (icmpsub_process_icmp6(tun_fd, (const struct icmp6_hdr *)packetp,
+			      data_len - sizeof(ip6_hdr),
+			      &discard_ok)
+	== -1) {
       return (0);
-   }
+    }
+    if (discard_ok)
+      return (0);
+  }
 
-   /* Get some basic IPv6 header values. */
-   struct in6_addr ip6_before_src, ip6_before_dst;
-   uint16_t ip6_payload_len;
-   uint8_t ip6_hop_limit;
-   memcpy((void *)&ip6_before_src, (const void *)&ip6_hdrp->ip6_src,
-         sizeof(struct in6_addr));
-   memcpy((void *)&ip6_before_dst, (const void *)&ip6_hdrp->ip6_dst,
-         sizeof(struct in6_addr));
-   ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
-   if (ip6_frag_hdrp != NULL) {
-      ip6_payload_len -= sizeof(struct ip6_frag);
-   }
-   ip6_hop_limit = ip6_hdrp->ip6_hlim;
+  /* Fragment header check. */
+  struct ip6_frag *ip6_frag_hdrp = NULL;
+  if (ip6_next_header == IPPROTO_FRAGMENT) {
+    ip6_frag_hdrp = (struct ip6_frag *)packetp;
+    ip6_next_header = ip6_frag_hdrp->ip6f_nxt;
+    packetp += sizeof(struct ip6_frag);
+  }
 
-   /* Check the packet size. */
-   if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
-      /* Data is too short.  Drop it. */
-      warnx("Insufficient data supplied (%ld), while IP header says (%ld)",
-            data_len, ip6_payload_len + sizeof(struct ip6_hdr));
-      return (-1);
-   }
+  /*
+   * Next header check: Currently, any kinds of extension headers other
+   * than the Fragment header are not supported and just dropped.
+   */
+  if (ip6_next_header != IPPROTO_ICMPV6
+      && ip6_next_header != IPPROTO_TCP
+      && ip6_next_header != IPPROTO_UDP) {
+    warnx("Extention header %d is not supported.", ip6_next_header);
+    return (0);
+  }
+
+  /* Get some basic IPv6 header values. */
+  struct in6_addr ip6_before_src, ip6_before_dst;
+  uint16_t ip6_payload_len;
+  uint8_t ip6_hop_limit;
+  memcpy((void *)&ip6_before_src, (const void *)&ip6_hdrp->ip6_src,
+	 sizeof(struct in6_addr));
+  memcpy((void *)&ip6_before_dst, (const void *)&ip6_hdrp->ip6_dst,
+	 sizeof(struct in6_addr));
+  ip6_payload_len = ntohs(ip6_hdrp->ip6_plen);
+  if (ip6_frag_hdrp != NULL) {
+    ip6_payload_len -= sizeof(struct ip6_frag);
+  }
+  ip6_hop_limit = ip6_hdrp->ip6_hlim;
+
+  /* Check the packet size. */
+  if (ip6_payload_len + sizeof(struct ip6_hdr) > data_len) {
+    /* Data is too short.  Drop it. */
+    warnx("Insufficient data supplied (%lu), while IP header says (%lu)",
+	  data_len, ip6_payload_len + sizeof(struct ip6_hdr));
+    return (-1);
+  }
 
 #ifdef DEBUG
-   char addr_name[64];
-   fprintf(stderr, "src = %s\n",
-         inet_ntop(AF_INET6, &ip6_before_src, addr_name, 64));
-   fprintf(stderr, "dst = %s\n",
-         inet_ntop(AF_INET6, &ip6_before_dst, addr_name, 64));
-   fprintf(stderr, "plen = %d\n", ip6_payload_len);
-   fprintf(stderr, "nxt = %d\n", ip6_next_header);
-   fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
+  char addr_name[64];
+  fprintf(stderr, "src = %s\n",
+	  inet_ntop(AF_INET6, &ip6_before_src, addr_name, 64));
+  fprintf(stderr, "dst = %s\n",
+	  inet_ntop(AF_INET6, &ip6_before_dst, addr_name, 64));
+  fprintf(stderr, "plen = %d\n", ip6_payload_len);
+  fprintf(stderr, "nxt = %d\n", ip6_next_header);
+  fprintf(stderr, "hlim = %d\n", ip6_hop_limit);
 #endif
 
-   /* Convert IP addresses. */
-   struct in6_addr ip6_after_src, ip6_after_dst;
-   if (mapping66_convert_addrs_GtoI(&ip6_before_src, &ip6_before_dst,
-            &ip6_after_src, &ip6_after_dst) == -1) {
-      warnx("no mapping available. packet is dropped.");
-      return (-1);
-   }
+  /* Convert IP addresses. */
+  struct in6_addr ip6_after_src, ip6_after_dst;
+  if (mapping66_convert_addrs_GtoI(&ip6_before_src, &ip6_before_dst,
+				   &ip6_after_src, &ip6_after_dst) == -1) {
+    warnx("no mapping available. packet is dropped.");
+    return (-1);
+  }
 
-   /* Prepare an IPv6 header template. */
-   struct ip6_hdr ip6_hdr;
-   memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
-   ip6_hdr.ip6_vfc = IPV6_VERSION;
-   ip6_hdr.ip6_plen = ip6_hdrp->ip6_plen;
-   ip6_hdr.ip6_nxt = ip6_next_header;
-   ip6_hdr.ip6_hlim = ip6_hop_limit;
-   memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_after_src,
-         sizeof(struct in6_addr));
-   memcpy((void *)&ip6_hdr.ip6_dst, (const void *)&ip6_after_dst,
-         sizeof(struct in6_addr));
+  /* Prepare an IPv6 header template. */
+  struct ip6_hdr ip6_hdr;
+  memset(&ip6_hdr, 0, sizeof(struct ip6_hdr));
+  ip6_hdr.ip6_vfc = IPV6_VERSION;
+  ip6_hdr.ip6_plen = ip6_hdrp->ip6_plen;
+  ip6_hdr.ip6_nxt = ip6_next_header;
+  ip6_hdr.ip6_hlim = ip6_hop_limit;
+  memcpy((void *)&ip6_hdr.ip6_src, (const void *)&ip6_after_src,
+	 sizeof(struct in6_addr));
+  memcpy((void *)&ip6_hdr.ip6_dst, (const void *)&ip6_after_dst,
+	 sizeof(struct in6_addr));
 
 #ifdef DEBUG
   fprintf(stderr, "to src = %s\n",
@@ -1119,59 +1293,26 @@ send66_GtoI(void *datap, size_t data_len)
   fprintf(stderr, "plen = %d\n", ntohs(ip6_hdr.ip6_plen));
 #endif
 
-   struct iovec iov[4];
-   uint32_t af;
+  struct iovec iov[4];
+  uint32_t af;
 
-   tun_set_af(&af, AF_INET6);
-   iov[0].iov_base = &af;
-   iov[0].iov_len = sizeof(uint32_t);
-   iov[1].iov_base = &ip6_hdr;
-   iov[1].iov_len = sizeof(struct ip6_hdr);
-   iov[2].iov_base = NULL;
-   iov[2].iov_len = 0;
-   iov[3].iov_base = packetp;
-   iov[3].iov_len = ip6_payload_len;
+  tun_set_af(&af, AF_INET6);
+  iov[0].iov_base = &af;
+  iov[0].iov_len = sizeof(uint32_t);
+  iov[1].iov_base = &ip6_hdr;
+  iov[1].iov_len = sizeof(struct ip6_hdr);
+  iov[2].iov_base = NULL;
+  iov[2].iov_len = 0;
+  iov[3].iov_base = packetp;
+  iov[3].iov_len = ip6_payload_len;
 
-   cksum66_update_ulp(ip6_hdr.ip6_nxt, ip6_hdrp, iov);
-   
-   ssize_t write_len;
-   write_len = writev(tun_fd, iov, 4);
-   if (write_len == -1) {
-      warn("sending an IPv6 packet failed.");
-   }
+  cksum66_update_ulp(ip6_hdr.ip6_nxt, ip6_hdrp, iov);
 
-   return (0);
+  ssize_t write_len;
+  write_len = writev(tun_fd, iov, 4);
+  if (write_len == -1) {
+    warn("sending an IPv6 packet failed.");
+  }
+
+  return (0);
 }
-
-static int
-send_6(void *datap, size_t data_len)
-{
-  assert(datap != NULL);
-  char *packetp = datap;
-  /* Analyze IPv6 header contents. */
-  struct ip6_hdr *ip6_hdrp;
-  ip6_hdrp = (struct ip6_hdr *)packetp;
-  /* Get some basic IPv6 header values. */
-  struct in6_addr ip6_src, ip6_dst;
-  memcpy((void *)&ip6_src, (const void *)&ip6_hdrp->ip6_src,
-	 sizeof(struct in6_addr));
-  memcpy((void *)&ip6_dst, (const void *)&ip6_hdrp->ip6_dst,
-	 sizeof(struct in6_addr));
-
-   uint32_t d = 0;
-   d = dispatch_6(&ip6_src, &ip6_dst);
-   switch(d){
-      case SIXTOSIX_ItoG:
-         send66_ItoG(datap, data_len);
-         break;
-      case SIXTOSIX_GtoI:
-         send66_GtoI(datap, data_len);
-         break;
-      case SIXTOFOUR:
-         send_6to4(datap, data_len);
-         break;
-   }
-
-   return 0;
-}
-

@@ -1,1 +1,4 @@
 *.[oa]
+map646
+contrib/stat/client/stat_client
+contrib/stat/cron/stat_client_cron

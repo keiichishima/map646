@@ -1,5 +1,6 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010, 2011, 2012
+ *   IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -108,7 +109,7 @@ icmpsub_process_icmp4(int tun_fd, const struct icmp *icmp4_hdrp,
 	 * The original IPv4 header is necessary to extract the
 	 * destination address of the original packet.
 	 */
-	warnx("ICMP_UNREACH_NEEDFRAG message must be longer than %ld "
+	warnx("ICMP_UNREACH_NEEDFRAG message must be longer than %lu "
 	      "(%d received).", ICMP_MINLEN + sizeof(struct ip), icmp4_size);
 	return (-1);
       }
@@ -158,12 +159,19 @@ icmpsub_process_icmp4(int tun_fd, const struct icmp *icmp4_hdrp,
 	     sizeof(struct in6_addr));
       memcpy(&orig_ip6_hdr.ip6_dst, &orig_remote_addr6,
 	     sizeof(struct in6_addr));
-      if (icmpsub_send_icmp6_packet_too_big(tun_fd, &orig_ip6_hdr,
-					    &orig_remote_addr6,
-					    &orig_local_addr6,
-					    mtu) == -1) {
-	warnx("failed to send ICMPv6 Packet Too Big message.");
-	return (-1);
+      /*
+       * Check weather tun_fd is valid,
+       * because this func is also used by stat functions
+       */
+
+      if(tun_fd > 0){
+	if (icmpsub_send_icmp6_packet_too_big(tun_fd, &orig_ip6_hdr,
+					      &orig_remote_addr6,
+					      &orig_local_addr6,
+					      mtu) == -1) {
+	  warnx("failed to send ICMPv6 Packet Too Big message.");
+	  return (-1);
+	}
       }
     }
   }
@@ -186,7 +194,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
   *discard_okp = 0;
 
   if (icmp6_size < sizeof(struct icmp6_hdr)) {
-    warnx("ICMPv6 message must be longer than %ld (%d received).",
+    warnx("ICMPv6 message must be longer than %lu (%d received).",
 	  sizeof(struct icmp6_hdr), icmp6_size);
     *discard_okp = 1;
     return (-1);
@@ -209,7 +217,7 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
        * The original IPv6 header is necessary to extract the
        * destination address of the original packet.
        */
-      warnx("ICMP6_PACKET_TOO_BIG message must be longer than %ld "
+      warnx("ICMP6_PACKET_TOO_BIG message must be longer than %lu "
 	    "(%d received).",
 	    sizeof(struct icmp6_hdr) + sizeof(struct ip6_hdr), icmp6_size);
       return (-1);
@@ -262,7 +270,8 @@ icmpsub_process_icmp6(int tun_fd, const struct icmp6_hdr *icmp6_hdrp,
     if (icmpsub_send_icmp4_unreach_needfrag(tun_fd, &orig_ip4_hdr,
 					    &orig_remote_addr4,
 					    &orig_local_addr4,
-					    mtu - IP6_FRAG6_HDR_LEN) == -1) {
+					    mtu - IP6_FRAG6_HDR_LEN)
+	== -1) {
       warnx("failed to send ICMP unreach needfrag.");
       return (-1);
     }
@@ -435,7 +444,6 @@ icmpsub_convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 				      icmp_hdrp->icmp_code,
 				      ICMP6_ECHO_REPLY,
 				      icmp_hdrp->icmp_code) == -1) {
-	
 	warnx("Checksum update when converting ICMP Echo Reply to ICMPv6 Echo Reply failed.");
 	return (-1);
       }
@@ -471,7 +479,7 @@ icmpsub_convert_icmp(int incoming_icmp_protocol, struct iovec *iov)
 				      icmp6_hdrp->icmp6_code,
 				      ICMP_ECHOREPLY,
 				      icmp6_hdrp->icmp6_code) == -1) {
-      	warnx("Checksum update when converting ICMPv6 Echo Reply to ICMP Echo Reply failed.");
+	warnx("Checksum update when converting ICMPv6 Echo Reply to ICMP Echo Reply failed.");
 	return(-1);
       }
       break;

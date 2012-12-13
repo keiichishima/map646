@@ -2,10 +2,19 @@
 
 while true
 do
+	# restart map646 if it dies.
 	/bin/ps -ef | /bin/grep map646 | /bin/grep -v "grep\|map646watch" > /dev/null 2>&1 
 	if [ $? -ne 0 ]; then
-		sh /etc/init.d/map646 start > /dev/null 2>&1
+		/etc/init.d/map646 start > /dev/null 2>&1
 	fi
-	sleep 60
+
+	# send SIGHUP if the route entry for mapping-prefix/64 disappears.
+	mapping_prefix=`/bin/cat /etc/map646.conf | /bin/grep mapping-prefix | /bin/sed -e 's/^mapping-prefix[ \t][ \t]*\([0-9a-zA-Z].*\)$/\1/'`
+	/sbin/ip -6 route list | /bin/grep ${mapping_prefix}/64 > /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+		/usr/bin/killall -HUP map646
+	fi
+
+	sleep 30
 done
 

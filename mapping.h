@@ -1,5 +1,6 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010, 2011, 2012
+ *   IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,9 +26,14 @@
 #ifndef __MAPPING_H__
 #define __MAPPING_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define SIXTOSIX_ItoG 1
 #define SIXTOSIX_GtoI 2
 #define SIXTOFOUR 3
+#define FOURTOSIX 4
 
 int mapping_initialize(void);
 int mapping_create_table(const char *, int);
@@ -41,15 +47,20 @@ int mapping_convert_addrs_6to4(const struct in6_addr *,
 			       struct in_addr *,
 			       struct in_addr *);
 int mapping66_convert_addrs_ItoG(const struct in6_addr *,
-			       const struct in6_addr *,
-			       struct in6_addr *,
-			       struct in6_addr *);
+				 const struct in6_addr *,
+				 struct in6_addr *,
+				 struct in6_addr *);
 int mapping66_convert_addrs_GtoI(const struct in6_addr *,
-			       const struct in6_addr *,
-			       struct in6_addr *,
-			       struct in6_addr *);
+				 const struct in6_addr *,
+				 struct in6_addr *,
+				 struct in6_addr *);
 int dispatch_6(const struct in6_addr *, const struct in6_addr *);
+uint8_t dispatch(uint8_t *);
 int mapping_install_route(void);
 int mapping_uninstall_route(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

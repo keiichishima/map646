@@ -1,5 +1,6 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010, 2011, 2012
+ *   IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,7 +26,11 @@
 #ifndef __TUNIF_H__
 #define __TUNIF_H__
 
-#define TUN_DEFAULT_IF_NAME "nat66"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TUN_DEFAULT_IF_NAME "tun646"
 
 extern char tun_if_name[];
 
@@ -41,5 +46,8 @@ int tun_create_policy_table();
 int tun_delete_route(int, const void *, int);
 int tun_delete_policy();
 
-#endif
 
+#ifdef __cplusplus
+}
+#endif
+#endif

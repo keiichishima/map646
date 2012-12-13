@@ -1,5 +1,6 @@
 /*
- * Copyright 2010, 2011 IIJ Innovation Institute Inc. All rights reserved.
+ * Copyright 2010, 2011, 2012
+ *   IIJ Innovation Institute Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,10 +26,18 @@
 #ifndef __CHECKSUM_H__
 #define __CHECKSUM_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 uint16_t cksum_calc_ip4_header(const struct ip *);
 int cksum_update_ulp(int, const void *, struct iovec *);
 int cksum66_update_ulp(int, const void *, struct iovec *);
 int cksum_calc_ulp(int, struct iovec *);
 int cksum_update_icmp_type_code(void *, int, int, int, int);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
