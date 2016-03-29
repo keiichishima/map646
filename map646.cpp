@@ -179,7 +179,7 @@ int main(int argc, char *argv[])
   uint8_t buf[BUF_LEN];
   uint8_t *bufp;
 
-  bool stat_enable = true;
+  bool stat_enable = false;
 
   std::cout << std::boolalpha << "stat_enable: " << stat_enable << std::endl;
 
