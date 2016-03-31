@@ -141,7 +141,7 @@ int main(int argc, char *argv[])
   /* Set up epoll */
   int epfd, nfiles = 10;
   epoll_event *epevp;
-  if((epfd = epoll_create( nfiles )) == -1) {
+  if ((epfd = epoll_create( nfiles )) == -1) {
     errx(EXIT_FAILURE, "epoll_create() failed");
   }
 
@@ -228,7 +228,7 @@ int main(int argc, char *argv[])
 	}
 
       } else if (fd == stat_listen_fd) {
-	if((stat_fd = accept(stat_listen_fd, (sockaddr *)&caddr, &len)) < 0){
+	if ((stat_fd = accept(stat_listen_fd, (sockaddr *)&caddr, &len)) < 0) {
 	  warnx("failed to accept stat client");
 	  break;
 	}
@@ -263,8 +263,7 @@ int main(int argc, char *argv[])
 	    } else {
 	      map_stat.safe_write(fd, std::string("false"));
 	    }
-	  } else if(strcmp(command, "stat") == 0) {
-	    stat_enable = !stat_enable;
+	  } else if (strcmp(command, "stat") == 0) {
 	    if (stat_enable) {
 	      map_stat.safe_write(fd, std::string("true"));
 	    } else {
@@ -303,7 +302,7 @@ int main(int argc, char *argv[])
  * The clenaup routine called when SIGINT is received, typically when
  * the program is terminated by a user.
  */
-   void
+void
 cleanup_sigint(int dummy)
 {
   cleanup();
@@ -315,7 +314,7 @@ cleanup_sigint(int dummy)
  * systems.  In Linux systems, the tun interface will automatically
  * disappear when the owner process dies.
  */
-   void
+void
 cleanup(void)
 {
   if (getpid() == 0) {
@@ -327,10 +326,10 @@ cleanup(void)
   if (tun_fd != -1) {
     close(tun_fd);
   }
-  if (stat_listen_fd != -1){
+  if (stat_listen_fd != -1) {
     close(stat_listen_fd);
   }
-  if (stat_fd != -1){
+  if (stat_fd != -1) {
     close(stat_fd);
   }
 
@@ -356,7 +355,7 @@ reload_sighup(int dummy)
    */
   if (mapping_uninstall_route() == -1) {
     warnx("failed to uninstall route entries created before.  should we continue?");
-   }
+  }
 
   /* Destroy the mapping table. */
   mapping_destroy_table();

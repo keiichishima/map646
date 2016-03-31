@@ -302,9 +302,9 @@ tun_add_policy(int af, const void *addr, int prefix_len)
 int
 tun_delete_policy()
 {
-   int prefix_len = 0;
-   return tun_op_rule(RTM_DELRULE, AF_INET6, NULL, prefix_len,
-		      POLICY_TABLE_ID);
+  int prefix_len = 0;
+  return tun_op_rule(RTM_DELRULE, AF_INET6, NULL, prefix_len,
+		     POLICY_TABLE_ID);
 }
 
 /* Stub routine for route addition/deletion. */

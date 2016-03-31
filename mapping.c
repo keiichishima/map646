@@ -376,42 +376,42 @@ mapping_convert_addrs_6to4(const struct in6_addr *ip6_src,
  * the IPv6 address information (specified as the first 2 arguments)
  * of the incoming packet and the information of the mapping table.
  */
-   int
+int
 mapping66_convert_addrs_GtoI(const struct in6_addr *ip6_before_src,
-      const struct in6_addr *ip6_before_dst,
-      struct in6_addr *ip6_after_src,
-      struct in6_addr *ip6_after_dst)
+			     const struct in6_addr *ip6_before_dst,
+			     struct in6_addr *ip6_after_src,
+			     struct in6_addr *ip6_after_dst)
 {
-   assert(ip6_before_src != NULL);
-   assert(ip6_before_dst != NULL);
-   assert(ip6_after_src != NULL);
-   assert(ip6_after_dst != NULL);
+  assert(ip6_before_src != NULL);
+  assert(ip6_before_dst != NULL);
+  assert(ip6_after_src != NULL);
+  assert(ip6_after_dst != NULL);
 
 
-   const struct mapping66 *mappingp
-      = mapping66_find_mapping_with_G_addr(ip6_before_dst);
+  const struct mapping66 *mappingp
+    = mapping66_find_mapping_with_G_addr(ip6_before_dst);
 
-   if(mappingp){
-      /*
-       * The packet is from the Internet
-       * change dst addr to the corresponding addr
-       */
+  if(mappingp){
+    /*
+     * The packet is from the Internet
+     * change dst addr to the corresponding addr
+     */
 #ifdef DEBUG
-      warnx("from the Internet");
+    warnx("from the Internet");
 #endif
-      memcpy((void *)ip6_after_dst, (const void *)&mappingp->intra, sizeof(struct in6_addr));
-      memcpy((void *)ip6_after_src, (const void *)ip6_before_src, sizeof(struct in6_addr));
-   }else{
-      /*
-       * no mapping exists
-       */
-      char addr_str[64];
-      warnx("no mapping entry found for %s.",
-	    inet_ntop(AF_INET6, ip6_before_dst, addr_str, 64));
-      return (-1);
-   }
+    memcpy((void *)ip6_after_dst, (const void *)&mappingp->intra, sizeof(struct in6_addr));
+    memcpy((void *)ip6_after_src, (const void *)ip6_before_src, sizeof(struct in6_addr));
+  }else{
+    /*
+     * no mapping exists
+     */
+    char addr_str[64];
+    warnx("no mapping entry found for %s.",
+	  inet_ntop(AF_INET6, ip6_before_dst, addr_str, 64));
+    return (-1);
+  }
 
-   return (0);
+  return (0);
 }
 
 /*
