@@ -15,6 +15,7 @@ RUN make
 
 
 FROM debian:jessie
+LABEL maintainer="frank.villaro@infomaniak.com"
 RUN apt-get update && apt-get install -y libjson0
 
 WORKDIR /root/
