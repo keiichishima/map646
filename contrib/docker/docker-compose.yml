@@ -1,0 +1,13 @@
+version: '3'
+services:
+  map646:
+    image: frankkkkk/map646
+    network_mode: host
+    privileged: yes
+    environment:
+      MAPPING_PREFIX: '64:1234::'
+      MAP_STATIC: '1.1.1.1=2001:db8::1;2.2.2.2=2001:db8::2'
+
+
+
+
